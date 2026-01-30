@@ -3,6 +3,7 @@ package util
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 )
 
@@ -77,4 +78,28 @@ func FormatTime(seconds float64, withMillis bool) string {
 		return fmt.Sprintf("%d:%02d:%02d.%03d", h, m, s, ms)
 	}
 	return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+}
+
+// FormatNumber formats an integer with thousands separators.
+func FormatNumber(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	sign := ""
+	if n < 0 {
+		sign = "-"
+		n = -n
+	}
+	s := strconv.FormatInt(n, 10)
+	if len(s) <= 3 {
+		return sign + s
+	}
+	out := make([]byte, 0, len(s)+len(s)/3)
+	for i, c := range s {
+		if i != 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, byte(c))
+	}
+	return sign + string(out)
 }

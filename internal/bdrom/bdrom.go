@@ -3,12 +3,12 @@ package bdrom
 import (
 	"encoding/xml"
 	"fmt"
-	"os"
-	"os/exec"
+	"io"
+	"path"
 	"path/filepath"
-	"runtime"
 	"strings"
 
+	"github.com/autobrr/go-bdinfo/internal/fs"
 	"github.com/autobrr/go-bdinfo/internal/settings"
 	"github.com/autobrr/go-bdinfo/internal/stream"
 	"github.com/autobrr/go-bdinfo/internal/util"
@@ -17,6 +17,16 @@ import (
 type BDROM struct {
 	Path string
 	Settings settings.Settings
+	fileSystem fs.FileSystem
+	rootDirectory fs.DirectoryInfo
+	bdmvDirectory fs.DirectoryInfo
+	clipinfDirectory fs.DirectoryInfo
+	playlistDirectory fs.DirectoryInfo
+	streamDirectory fs.DirectoryInfo
+	ssifDirectory fs.DirectoryInfo
+	metaDirectory fs.DirectoryInfo
+	bdjoDirectory fs.DirectoryInfo
+	snpDirectory fs.DirectoryInfo
 
 	DirectoryRoot string
 	DirectoryBDMV string
@@ -53,18 +63,29 @@ type ScanResult struct {
 }
 
 func New(path string, settings settings.Settings) (*BDROM, error) {
-	root := path
+	rootPath := path
 	cleanup := func() {}
+	fileSystem := fs.NewDiskFileSystem()
+	volumeLabel := ""
+
 	if strings.HasSuffix(strings.ToLower(path), ".iso") {
-		mount, unmount, err := mountISO(path)
-		if err != nil {
+		isoFS := fs.NewISOFileSystem()
+		if err := isoFS.Mount(path); err != nil {
 			return nil, err
 		}
-		root = mount
-		cleanup = unmount
+		fileSystem = isoFS
+		rootPath = "/"
+		volumeLabel = isoFS.GetVolumeLabel()
+		cleanup = func() { _ = isoFS.Unmount() }
 	}
 
-	bdmv, err := findBDMV(root)
+	rootDir, err := fileSystem.GetDirectoryInfo(rootPath)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+
+	bdmvDir, err := findBDMVDirectory(rootDir)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -73,8 +94,9 @@ func New(path string, settings settings.Settings) (*BDROM, error) {
 	rom := &BDROM{
 		Path: path,
 		Settings: settings,
-		DirectoryBDMV: bdmv,
-		DirectoryRoot: filepath.Dir(bdmv),
+		fileSystem: fileSystem,
+		rootDirectory: rootDir,
+		bdmvDirectory: bdmvDir,
 		PlaylistFiles: make(map[string]*PlaylistFile),
 		StreamClipFiles: make(map[string]*StreamClipFile),
 		StreamFiles: make(map[string]*StreamFile),
@@ -82,106 +104,141 @@ func New(path string, settings settings.Settings) (*BDROM, error) {
 		cleanup: cleanup,
 	}
 
-	rom.DirectoryBDJO = findDirectory(bdmv, "BDJO")
-	rom.DirectoryCLIPINF = findDirectory(bdmv, "CLIPINF")
-	rom.DirectoryPLAYLIST = findDirectory(bdmv, "PLAYLIST")
-	rom.DirectorySTREAM = findDirectory(bdmv, "STREAM")
-	rom.DirectorySSIF = findDirectory(rom.DirectorySTREAM, "SSIF")
-	rom.DirectoryMeta = findDirectory(bdmv, "META")
-	rom.DirectorySNP = findDirectory(rom.DirectoryRoot, "SNP")
+	rom.DirectoryRoot = rootDir.FullName()
+	rom.DirectoryBDMV = bdmvDir.FullName()
 
-	if rom.DirectoryCLIPINF == "" || rom.DirectoryPLAYLIST == "" {
+	if dir, err := bdmvDir.GetDirectory("BDJO"); err == nil {
+		rom.bdjoDirectory = dir
+		rom.DirectoryBDJO = dir.FullName()
+	}
+	if dir, err := bdmvDir.GetDirectory("CLIPINF"); err == nil {
+		rom.clipinfDirectory = dir
+		rom.DirectoryCLIPINF = dir.FullName()
+	}
+	if dir, err := bdmvDir.GetDirectory("PLAYLIST"); err == nil {
+		rom.playlistDirectory = dir
+		rom.DirectoryPLAYLIST = dir.FullName()
+	}
+	if dir, err := bdmvDir.GetDirectory("STREAM"); err == nil {
+		rom.streamDirectory = dir
+		rom.DirectorySTREAM = dir.FullName()
+		if ssifDir, err := dir.GetDirectory("SSIF"); err == nil {
+			rom.ssifDirectory = ssifDir
+			rom.DirectorySSIF = ssifDir.FullName()
+		}
+	}
+	if dir, err := bdmvDir.GetDirectory("META"); err == nil {
+		rom.metaDirectory = dir
+		rom.DirectoryMeta = dir.FullName()
+	}
+	if dir, err := rootDir.GetDirectory("SNP"); err == nil {
+		rom.snpDirectory = dir
+		rom.DirectorySNP = dir.FullName()
+	}
+
+	if rom.clipinfDirectory == nil || rom.playlistDirectory == nil {
 		rom.cleanup()
 		return nil, fmt.Errorf("unable to locate BD structure")
 	}
 
-	rom.VolumeLabel = filepath.Base(rom.DirectoryRoot)
-	rom.Size = uint64(getDirectorySize(rom.DirectoryRoot))
-
-	indexPath := filepath.Join(rom.DirectoryBDMV, "index.bdmv")
-	if data, err := os.ReadFile(indexPath); err == nil && len(data) >= 8 {
-		if string(data[:8]) == "INDX0300" {
-			rom.IsUHD = true
-		}
+	if volumeLabel == "" {
+		volumeLabel = filepath.Base(rom.DirectoryRoot)
 	}
+	rom.VolumeLabel = volumeLabel
+	rom.Size = uint64(getDirectorySizeFS(rootDir))
 
-	rom.IsBDPlus = directoryExists(filepath.Join(rom.DirectoryRoot, "BDSVM")) ||
-		directoryExists(filepath.Join(rom.DirectoryRoot, "SLYVM")) ||
-		directoryExists(filepath.Join(rom.DirectoryRoot, "ANYVM"))
-
-	if rom.DirectoryBDJO != "" {
-		entries, _ := os.ReadDir(rom.DirectoryBDJO)
-		if len(entries) > 0 {
-			rom.IsBDJava = true
-		}
-	}
-
-	if rom.DirectorySNP != "" {
-		entries, _ := os.ReadDir(rom.DirectorySNP)
-		for _, entry := range entries {
-			name := strings.ToLower(entry.Name())
-			if strings.HasSuffix(name, ".mnv") {
-				rom.IsPSP = true
-				break
+	if indexFile, err := bdmvDir.GetFile("index.bdmv"); err == nil {
+		if header, err := readFileHeader(indexFile, 8); err == nil && len(header) >= 8 {
+			if string(header[:8]) == "INDX0300" {
+				rom.IsUHD = true
 			}
 		}
 	}
 
-	if rom.DirectorySSIF != "" {
-		entries, _ := os.ReadDir(rom.DirectorySSIF)
-		if len(entries) > 0 {
+	rom.IsBDPlus = directoryExistsFS(rootDir, "BDSVM") ||
+		directoryExistsFS(rootDir, "SLYVM") ||
+		directoryExistsFS(rootDir, "ANYVM")
+
+	if rom.bdjoDirectory != nil {
+		if files, err := rom.bdjoDirectory.GetFiles(); err == nil && len(files) > 0 {
+			rom.IsBDJava = true
+		}
+	}
+
+	if rom.snpDirectory != nil {
+		if files, err := rom.snpDirectory.GetFiles(); err == nil {
+			for _, file := range files {
+				if strings.HasSuffix(strings.ToLower(file.Name()), ".mnv") {
+					rom.IsPSP = true
+					break
+				}
+			}
+		}
+	}
+
+	if rom.ssifDirectory != nil {
+		if files, err := rom.ssifDirectory.GetFiles(); err == nil && len(files) > 0 {
 			rom.Is3D = true
 		}
 	}
 
-	if fileExists(filepath.Join(rom.DirectoryRoot, "FilmIndex.xml")) {
+	if fileExistsFS(rootDir, "FilmIndex.xml") {
 		rom.IsDBOX = true
 	}
 
-	rom.DiscTitle = readDiscTitle(rom.DirectoryMeta)
+	rom.DiscTitle = readDiscTitleFS(rom.metaDirectory)
 
-	// load files
-	if rom.DirectoryPLAYLIST != "" {
-		files, _ := filepath.Glob(filepath.Join(rom.DirectoryPLAYLIST, "*.mpls"))
-		if len(files) == 0 {
-			files, _ = filepath.Glob(filepath.Join(rom.DirectoryPLAYLIST, "*.MPLS"))
-		}
-		for _, file := range files {
-			pl := NewPlaylistFile(file, settings)
-			rom.PlaylistFiles[pl.Name] = pl
+	if rom.playlistDirectory != nil {
+		if files, err := rom.playlistDirectory.GetFilesPattern("*.mpls"); err == nil && len(files) > 0 {
+			for _, file := range files {
+				pl := NewPlaylistFile(file, settings)
+				rom.PlaylistFiles[pl.Name] = pl
+			}
+		} else if files, err := rom.playlistDirectory.GetFilesPattern("*.MPLS"); err == nil {
+			for _, file := range files {
+				pl := NewPlaylistFile(file, settings)
+				rom.PlaylistFiles[pl.Name] = pl
+			}
 		}
 	}
 
-	if rom.DirectorySTREAM != "" {
-		files, _ := filepath.Glob(filepath.Join(rom.DirectorySTREAM, "*.m2ts"))
-		if len(files) == 0 {
-			files, _ = filepath.Glob(filepath.Join(rom.DirectorySTREAM, "*.M2TS"))
-		}
-		for _, file := range files {
-			sf := NewStreamFile(file)
-			rom.StreamFiles[sf.Name] = sf
-		}
-	}
-
-	if rom.DirectoryCLIPINF != "" {
-		files, _ := filepath.Glob(filepath.Join(rom.DirectoryCLIPINF, "*.clpi"))
-		if len(files) == 0 {
-			files, _ = filepath.Glob(filepath.Join(rom.DirectoryCLIPINF, "*.CLPI"))
-		}
-		for _, file := range files {
-			cf := NewStreamClipFile(file)
-			rom.StreamClipFiles[cf.Name] = cf
+	if rom.streamDirectory != nil {
+		if files, err := rom.streamDirectory.GetFilesPattern("*.m2ts"); err == nil && len(files) > 0 {
+			for _, file := range files {
+				sf := NewStreamFile(file)
+				rom.StreamFiles[sf.Name] = sf
+			}
+		} else if files, err := rom.streamDirectory.GetFilesPattern("*.M2TS"); err == nil {
+			for _, file := range files {
+				sf := NewStreamFile(file)
+				rom.StreamFiles[sf.Name] = sf
+			}
 		}
 	}
 
-	if rom.DirectorySSIF != "" {
-		files, _ := filepath.Glob(filepath.Join(rom.DirectorySSIF, "*.ssif"))
-		if len(files) == 0 {
-			files, _ = filepath.Glob(filepath.Join(rom.DirectorySSIF, "*.SSIF"))
+	if rom.clipinfDirectory != nil {
+		if files, err := rom.clipinfDirectory.GetFilesPattern("*.clpi"); err == nil && len(files) > 0 {
+			for _, file := range files {
+				cf := NewStreamClipFile(file)
+				rom.StreamClipFiles[cf.Name] = cf
+			}
+		} else if files, err := rom.clipinfDirectory.GetFilesPattern("*.CLPI"); err == nil {
+			for _, file := range files {
+				cf := NewStreamClipFile(file)
+				rom.StreamClipFiles[cf.Name] = cf
+			}
 		}
-		for _, file := range files {
-			info, _ := os.Stat(file)
-			rom.InterleavedFiles[strings.ToUpper(filepathBase(file))] = &InterleavedFile{Path: file, Name: strings.ToUpper(filepathBase(file)), Size: info.Size()}
+	}
+
+	if rom.ssifDirectory != nil {
+		if files, err := rom.ssifDirectory.GetFilesPattern("*.ssif"); err == nil && len(files) > 0 {
+			for _, file := range files {
+				rom.InterleavedFiles[strings.ToUpper(file.Name())] = &InterleavedFile{FileInfo: file, Name: strings.ToUpper(file.Name()), Size: file.Length()}
+			}
+		} else if files, err := rom.ssifDirectory.GetFilesPattern("*.SSIF"); err == nil {
+			for _, file := range files {
+				rom.InterleavedFiles[strings.ToUpper(file.Name())] = &InterleavedFile{FileInfo: file, Name: strings.ToUpper(file.Name()), Size: file.Length()}
+			}
 		}
 	}
 
@@ -227,7 +284,7 @@ func (b *BDROM) Scan() ScanResult {
 				}
 			}
 		}
-		if err := streamFile.Scan(playlists); err != nil {
+		if err := streamFile.Scan(playlists, false); err != nil {
 			result.FileErrors[streamFile.Name] = err
 		}
 	}
@@ -260,107 +317,150 @@ func (b *BDROM) Scan() ScanResult {
 	return result
 }
 
-func findBDMV(root string) (string, error) {
-	if strings.EqualFold(filepath.Base(root), "BDMV") {
-		return root, nil
-	}
-	found := ""
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || found != "" {
-			return nil
-		}
-		if d.IsDir() && strings.EqualFold(d.Name(), "BDMV") {
-			found = path
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	if found == "" {
-		return "", fmt.Errorf("unable to locate BD structure")
-	}
-	return found, nil
-}
+// ScanFull performs a full bitrate/diagnostics scan over stream files.
+func (b *BDROM) ScanFull() ScanResult {
+	result := ScanResult{FileErrors: make(map[string]error)}
 
-func findDirectory(parent, name string) string {
-	if parent == "" {
-		return ""
+	for _, playlist := range b.PlaylistFiles {
+		playlist.ClearBitrates()
 	}
-	candidate := filepath.Join(parent, name)
-	if directoryExists(candidate) {
-		return candidate
-	}
-	entries, _ := os.ReadDir(parent)
-	for _, entry := range entries {
-		if entry.IsDir() && strings.EqualFold(entry.Name(), name) {
-			return filepath.Join(parent, entry.Name())
-		}
-	}
-	return ""
-}
 
-func directoryExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
-}
-
-func getDirectorySize(path string) int64 {
-	var size int64
-	_ = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if strings.EqualFold(filepath.Ext(d.Name()), ".SSIF") {
-				return filepath.SkipDir
+	for _, streamFile := range b.StreamFiles {
+		var playlists []*PlaylistFile
+		for _, playlist := range b.PlaylistFiles {
+			for _, clip := range playlist.StreamClips {
+				if clip.StreamFile == streamFile {
+					playlists = append(playlists, playlist)
+					break
+				}
 			}
-			return nil
 		}
-		if strings.EqualFold(filepath.Ext(d.Name()), ".SSIF") {
-			return nil
+		if err := streamFile.Scan(playlists, true); err != nil {
+			result.FileErrors[streamFile.Name] = err
 		}
-		info, err := d.Info()
+	}
+
+	return result
+}
+
+func findBDMVDirectory(root fs.DirectoryInfo) (fs.DirectoryInfo, error) {
+	if root == nil {
+		return nil, fmt.Errorf("unable to locate BD structure")
+	}
+	if strings.EqualFold(root.Name(), "BDMV") {
+		if _, err := root.GetDirectory("PLAYLIST"); err == nil {
+			return root, nil
+		}
+		if _, err := root.GetDirectory("STREAM"); err == nil {
+			return root, nil
+		}
+	}
+
+	queue := []fs.DirectoryInfo{root}
+	for len(queue) > 0 {
+		dir := queue[0]
+		queue = queue[1:]
+
+		dirs, err := dir.GetDirectories()
+		if err != nil {
+			continue
+		}
+		for _, sub := range dirs {
+			if strings.EqualFold(sub.Name(), "BDMV") {
+				if _, err := sub.GetDirectory("PLAYLIST"); err == nil {
+					return sub, nil
+				}
+				if _, err := sub.GetDirectory("STREAM"); err == nil {
+					return sub, nil
+				}
+			}
+			queue = append(queue, sub)
+		}
+	}
+
+	return nil, fmt.Errorf("unable to locate BD structure")
+}
+
+func directoryExistsFS(root fs.DirectoryInfo, name string) bool {
+	if root == nil {
+		return false
+	}
+	_, err := root.GetDirectory(name)
+	return err == nil
+}
+
+func fileExistsFS(root fs.DirectoryInfo, name string) bool {
+	if root == nil {
+		return false
+	}
+	_, err := root.GetFile(name)
+	return err == nil
+}
+
+func getDirectorySizeFS(root fs.DirectoryInfo) int64 {
+	if root == nil {
+		return 0
+	}
+	var size int64
+	queue := []fs.DirectoryInfo{root}
+	for len(queue) > 0 {
+		dir := queue[0]
+		queue = queue[1:]
+
+		files, err := dir.GetFiles()
 		if err == nil {
-			size += info.Size()
+			for _, file := range files {
+				if strings.EqualFold(path.Ext(file.Name()), ".ssif") {
+					continue
+				}
+				size += file.Length()
+			}
 		}
-		return nil
-	})
+		subdirs, err := dir.GetDirectories()
+		if err != nil {
+			continue
+		}
+		for _, sub := range subdirs {
+			if strings.EqualFold(path.Ext(sub.Name()), ".ssif") {
+				continue
+			}
+			queue = append(queue, sub)
+		}
+	}
 	return size
 }
 
-type discInfo struct {
-	XMLName xml.Name `xml:"discinfo"`
-	Title struct {
-		Name string `xml:"name"`
-	} `xml:"title"`
+func readFileHeader(file fs.FileInfo, length int) ([]byte, error) {
+	if file == nil || length <= 0 {
+		return nil, fmt.Errorf("invalid file")
+	}
+	reader, err := file.OpenRead()
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	buf := make([]byte, length)
+	n, err := reader.Read(buf)
+	if err != nil && n == 0 {
+		return nil, err
+	}
+	return buf[:n], nil
 }
 
-func readDiscTitle(metaDir string) string {
-	if metaDir == "" {
+func readDiscTitleFS(metaDir fs.DirectoryInfo) string {
+	if metaDir == nil {
 		return ""
 	}
-	var target string
-	_ = filepath.WalkDir(metaDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if strings.EqualFold(d.Name(), "bdmt_eng.xml") {
-			target = path
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	if target == "" {
+	file, ok := findFileCaseInsensitive(metaDir, "bdmt_eng.xml")
+	if !ok {
 		return ""
 	}
-	data, err := os.ReadFile(target)
+	reader, err := file.OpenRead()
+	if err != nil {
+		return ""
+	}
+	defer reader.Close()
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return ""
 	}
@@ -380,34 +480,27 @@ func readDiscTitle(metaDir string) string {
 	return name
 }
 
-func mountISO(path string) (string, func(), error) {
-	if runtime.GOOS != "darwin" {
-		return "", func() {}, fmt.Errorf("iso mounting not supported on %s", runtime.GOOS)
-	}
-	cmd := exec.Command("hdiutil", "attach", "-nobrowse", "-readonly", path)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", func() {}, fmt.Errorf("hdiutil attach failed: %w", err)
-	}
-	lines := strings.Split(string(out), "\n")
-	mount := ""
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
+func findFileCaseInsensitive(root fs.DirectoryInfo, target string) (fs.FileInfo, bool) {
+	queue := []fs.DirectoryInfo{root}
+	for len(queue) > 0 {
+		dir := queue[0]
+		queue = queue[1:]
+
+		files, err := dir.GetFiles()
+		if err == nil {
+			for _, file := range files {
+				if strings.EqualFold(file.Name(), target) {
+					return file, true
+				}
+			}
+		}
+		dirs, err := dir.GetDirectories()
+		if err != nil {
 			continue
 		}
-		if strings.HasPrefix(fields[len(fields)-1], "/Volumes/") {
-			mount = fields[len(fields)-1]
-			break
-		}
+		queue = append(queue, dirs...)
 	}
-	if mount == "" {
-		return "", func() {}, fmt.Errorf("unable to find mount point")
-	}
-	cleanup := func() {
-		_ = exec.Command("hdiutil", "detach", mount).Run()
-	}
-	return mount, cleanup, nil
+	return nil, false
 }
 
 func (b *BDROM) FormatSize() string {

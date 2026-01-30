@@ -141,6 +141,53 @@ func (s *Stream) CodecName() string {
 	}
 }
 
+// CodecNameForInfo returns codec name with audio extensions applied.
+func CodecNameForInfo(info Info) string {
+	if info == nil {
+		return "UNKNOWN"
+	}
+	base := info.Base()
+	if audio, ok := info.(*AudioStream); ok {
+		switch audio.StreamType {
+		case StreamTypeAC3Audio:
+			if audio.AudioMode == AudioModeExtended {
+				return "Dolby Digital EX Audio"
+			}
+			return "Dolby Digital Audio"
+		case StreamTypeAC3PlusAudio:
+			if audio.HasExtensions {
+				return "Dolby Digital Plus/Atmos Audio"
+			}
+			return "Dolby Digital Plus Audio"
+		case StreamTypeAC3PlusSecondaryAudio:
+			return "Dolby Digital Plus Audio"
+		case StreamTypeAC3TrueHDAudio:
+			if audio.HasExtensions {
+				return "Dolby TrueHD/Atmos Audio"
+			}
+			return "Dolby TrueHD Audio"
+		case StreamTypeDTSAudio:
+			if audio.AudioMode == AudioModeExtended {
+				return "DTS-ES Audio"
+			}
+			return "DTS Audio"
+		case StreamTypeDTSHDAudio:
+			if audio.HasExtensions {
+				return "DTS:X High-Res Audio"
+			}
+			return "DTS-HD High-Res Audio"
+		case StreamTypeDTSHDSecondaryAudio:
+			return "DTS Express"
+		case StreamTypeDTSHDMasterAudio:
+			if audio.HasExtensions {
+				return "DTS:X Master Audio"
+			}
+			return "DTS-HD Master Audio"
+		}
+	}
+	return base.CodecName()
+}
+
 func (s *Stream) CodecAltName() string {
 	switch s.StreamType {
 	case StreamTypeMPEG1Video:
@@ -190,6 +237,34 @@ func (s *Stream) CodecAltName() string {
 	}
 }
 
+// CodecAltNameForInfo returns alternate codec name with audio extensions applied.
+func CodecAltNameForInfo(info Info) string {
+	if info == nil {
+		return "UNKNOWN"
+	}
+	base := info.Base()
+	if audio, ok := info.(*AudioStream); ok {
+		switch audio.StreamType {
+		case StreamTypeAC3TrueHDAudio:
+			if audio.HasExtensions {
+				return "Dolby Atmos"
+			}
+			return "Dolby TrueHD"
+		case StreamTypeDTSHDAudio:
+			if audio.HasExtensions {
+				return "DTS:X Hi-Res"
+			}
+			return "DTS-HD Hi-Res"
+		case StreamTypeDTSHDMasterAudio:
+			if audio.HasExtensions {
+				return "DTS:X Master"
+			}
+			return "DTS-HD Master"
+		}
+	}
+	return base.CodecAltName()
+}
+
 func (s *Stream) CodecShortName() string {
 	switch s.StreamType {
 	case StreamTypeMPEG1Video:
@@ -237,6 +312,44 @@ func (s *Stream) CodecShortName() string {
 	default:
 		return "UNKNOWN"
 	}
+}
+
+// CodecShortNameForInfo returns short codec name with audio extensions applied.
+func CodecShortNameForInfo(info Info) string {
+	if info == nil {
+		return "UNKNOWN"
+	}
+	base := info.Base()
+	if audio, ok := info.(*AudioStream); ok {
+		switch audio.StreamType {
+		case StreamTypeAC3Audio:
+			if audio.AudioMode == AudioModeExtended {
+				return "AC3-EX"
+			}
+			return "AC3"
+		case StreamTypeAC3TrueHDAudio:
+			if audio.HasExtensions {
+				return "Atmos"
+			}
+			return "TrueHD"
+		case StreamTypeDTSAudio:
+			if audio.AudioMode == AudioModeExtended {
+				return "DTS-ES"
+			}
+			return "DTS"
+		case StreamTypeDTSHDAudio:
+			if audio.HasExtensions {
+				return "DTS:X HR"
+			}
+			return "DTS-HD HR"
+		case StreamTypeDTSHDMasterAudio:
+			if audio.HasExtensions {
+				return "DTS:X MA"
+			}
+			return "DTS-HD MA"
+		}
+	}
+	return base.CodecShortName()
 }
 
 func (s *Stream) Description() string {
@@ -371,6 +484,13 @@ func (v *VideoStream) Description() string {
 	}
 	if v.EncodingProfile != "" {
 		description += v.EncodingProfile + " / "
+	}
+	if v.StreamType == StreamTypeHEVCVideo && v.ExtendedData != nil {
+		if ext, ok := v.ExtendedData.(*HEVCExtendedData); ok {
+			if len(ext.ExtendedFormatInfo) > 0 {
+				description += strings.Join(ext.ExtendedFormatInfo, " / ")
+			}
+		}
 	}
 	if strings.HasSuffix(description, " / ") {
 		description = strings.TrimSuffix(description, " / ")
@@ -583,6 +703,11 @@ func (g *GraphicsStream) Clone() Info {
 // TextStream for subtitles.
 type TextStream struct {
 	Stream
+}
+
+// HEVCExtendedData holds HEVC extended format info for descriptions.
+type HEVCExtendedData struct {
+	ExtendedFormatInfo []string
 }
 
 func NewTextStream() *TextStream {

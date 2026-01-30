@@ -12,6 +12,7 @@ import (
 
 	"github.com/autobrr/go-bdinfo/internal/bdrom"
 	"github.com/autobrr/go-bdinfo/internal/settings"
+	"github.com/autobrr/go-bdinfo/internal/stream"
 	"github.com/autobrr/go-bdinfo/internal/util"
 )
 
@@ -107,7 +108,7 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 		videoBitrate := ""
 		if len(playlist.VideoStreams) > 0 {
 			vs := playlist.VideoStreams[0]
-			videoCodec = vs.CodecAltName()
+			videoCodec = stream.CodecAltNameForInfo(vs)
 			if vs.BitRate > 0 {
 				videoBitrate = fmt.Sprintf("%d", int(math.Round(float64(vs.BitRate)/1000)))
 			}
@@ -115,15 +116,38 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 
 		mainAudio := ""
 		secondaryAudio := ""
-		for _, as := range playlist.AudioStreams {
-			mainAudio = fmt.Sprintf("%s %s", as.CodecAltName(), as.ChannelDescription())
+		mainLang := ""
+		if len(playlist.AudioStreams) > 0 {
+			as := playlist.AudioStreams[0]
+			mainLang = as.LanguageCode()
+			mainAudio = fmt.Sprintf("%s %s", stream.CodecAltNameForInfo(as), as.ChannelDescription())
 			if as.BitRate > 0 {
 				mainAudio += fmt.Sprintf(" %dKbps", int(math.Round(float64(as.BitRate)/1000)))
 			}
 			if as.SampleRate > 0 && as.BitDepth > 0 {
 				mainAudio += fmt.Sprintf(" (%dkHz/%d-bit)", as.SampleRate/1000, as.BitDepth)
 			}
-			break
+		}
+		if len(playlist.AudioStreams) > 1 {
+			for i := 1; i < len(playlist.AudioStreams); i++ {
+				as := playlist.AudioStreams[i]
+				if as.LanguageCode() != mainLang {
+					continue
+				}
+				if as.StreamType == stream.StreamTypeAC3PlusSecondaryAudio ||
+					as.StreamType == stream.StreamTypeDTSHDSecondaryAudio ||
+					(as.StreamType == stream.StreamTypeAC3Audio && as.ChannelCount == 2) {
+					continue
+				}
+				secondaryAudio = fmt.Sprintf("%s %s", stream.CodecAltNameForInfo(as), as.ChannelDescription())
+				if as.BitRate > 0 {
+					secondaryAudio += fmt.Sprintf(" %dKbps", int(math.Round(float64(as.BitRate)/1000)))
+				}
+				if as.SampleRate > 0 && as.BitDepth > 0 {
+					secondaryAudio += fmt.Sprintf(" (%dkHz/%d-bit)", as.SampleRate/1000, as.BitDepth)
+				}
+				break
+			}
 		}
 
 		b.WriteString("\n********************\n")
@@ -171,7 +195,7 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 				if !st.Base().IsVideoStream() {
 					continue
 				}
-				name := st.Base().CodecName()
+				name := stream.CodecNameForInfo(st)
 				bitrate := fmt.Sprintf("%d", int(math.Round(float64(st.Base().BitRate)/1000)))
 				fmt.Fprintf(&b, "%-24s%-20s%-16s\n", name, bitrate, st.Description())
 			}
@@ -186,7 +210,7 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 					continue
 				}
 				fmt.Fprintf(&b, "%-24s%-8d%-12s%-16s%-16s\n",
-					st.Base().CodecName(),
+					stream.CodecNameForInfo(st),
 					st.Base().PID,
 					st.Base().LanguageName,
 					fmt.Sprintf("%d", int(math.Round(float64(st.Base().BitRate)/1000))),
@@ -204,7 +228,7 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 					continue
 				}
 				fmt.Fprintf(&b, "%-24s%-8d%-12s%-16s\n",
-					st.Base().CodecName(),
+					stream.CodecNameForInfo(st),
 					st.Base().PID,
 					st.Base().LanguageName,
 					st.Description(),
@@ -233,6 +257,60 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 			fmt.Fprintf(&b, "%-10s%-16s\n", "------", "----")
 			for idx, chapter := range playlist.Chapters {
 				fmt.Fprintf(&b, "%-10d%-16s\n", idx+1, util.FormatTime(chapter, true))
+			}
+		}
+
+		if settings.GenerateStreamDiagnostics {
+			b.WriteString("\n\nSTREAM DIAGNOSTICS:\n\n")
+			fmt.Fprintf(&b, "%-16s%-16s%-16s%-16s%-24s%-24s%-24s%-16s%-16s\n",
+				"File", "PID", "Type", "Codec", "Language", "Seconds", "Bitrate", "Bytes", "Packets")
+			fmt.Fprintf(&b, "%-16s%-16s%-16s%-16s%-24s%-24s%-24s%-16s%-16s\n",
+				"----", "---", "----", "-----", "--------", "--------------", "--------------", "-------------", "-------")
+
+			reported := map[string]bool{}
+			for _, clip := range playlist.StreamClips {
+				if clip.StreamFile == nil {
+					continue
+				}
+				if reported[clip.Name] {
+					continue
+				}
+				reported[clip.Name] = true
+
+				clipName := clip.DisplayName()
+				if clip.AngleIndex > 0 {
+					clipName = fmt.Sprintf("%s (%d)", clipName, clip.AngleIndex)
+				}
+				for pid, clipStream := range clip.StreamFile.Streams {
+					if _, ok := playlist.Streams[pid]; !ok {
+						continue
+					}
+					playlistStream := playlist.Streams[pid]
+
+					clipSeconds := "0"
+					clipBitRate := "0"
+					if clip.StreamFile.Length > 0 {
+						clipSeconds = fmt.Sprintf("%.3f", clip.StreamFile.Length)
+						clipBitRate = util.FormatNumber(int64(math.Round(float64(clipStream.Base().PayloadBytes)*8/clip.StreamFile.Length/1000)))
+					}
+
+					language := ""
+					if code := playlistStream.Base().LanguageCode(); code != "" {
+						language = fmt.Sprintf("%s (%s)", code, playlistStream.Base().LanguageName)
+					}
+
+					fmt.Fprintf(&b, "%-16s%-16s%-16s%-16s%-24s%-24s%-24s%-16s%-16s\n",
+						clipName,
+						fmt.Sprintf("%d (0x%X)", clipStream.Base().PID, clipStream.Base().PID),
+						fmt.Sprintf("0x%02X", byte(clipStream.Base().StreamType)),
+						stream.CodecShortNameForInfo(clipStream),
+						language,
+						clipSeconds,
+						clipBitRate,
+						util.FormatNumber(int64(clipStream.Base().PayloadBytes)),
+						util.FormatNumber(int64(clipStream.Base().PacketCount)),
+					)
+				}
 			}
 		}
 

@@ -241,6 +241,13 @@ func scanAndReport(path string, settings settings.Settings) error {
 	defer rom.Close()
 
 	result := rom.Scan()
+	fullResult := rom.ScanFull()
+	if fullResult.ScanError != nil {
+		result.ScanError = fullResult.ScanError
+	}
+	for name, err := range fullResult.FileErrors {
+		result.FileErrors[name] = err
+	}
 
 	playlists := make([]*bdrom.PlaylistFile, 0, len(rom.PlaylistFiles))
 	for _, pl := range rom.PlaylistFiles {

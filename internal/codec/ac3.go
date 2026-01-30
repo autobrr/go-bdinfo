@@ -18,35 +18,92 @@ func ScanAC3(a *stream.AudioStream, data []byte) {
 	if data[0] != 0x0b || data[1] != 0x77 {
 		return
 	}
+
 	br := buffer.NewBitReader(data)
-	_, _ = br.ReadBits(16) // sync
-	_, _ = br.ReadBits(16) // crc1
-	fscod, ok := br.ReadBits(2)
-	if !ok {
-		return
+	read := func(bits int) uint64 {
+		v, _ := br.ReadBits(bits)
+		return v
 	}
-	frmsizecod, _ := br.ReadBits(6)
-	bsid, _ := br.ReadBits(5)
-	_, _ = br.ReadBits(3) // bsmod
-	acmod, _ := br.ReadBits(3)
-	if acmod == 2 { // stereo
-		_, _ = br.ReadBits(2) // dsurmod
+
+	_ = read(16) // sync
+	_ = read(16) // crc1
+	srCode := read(2)
+	frameSizeCode := read(6)
+	bsid := read(5)
+	_ = read(3) // bsmod
+	channelMode := read(3)
+	if (channelMode&0x1) > 0 && channelMode != 0x1 {
+		_ = read(2)
 	}
-	lfeon, _ := br.ReadBits(1)
+	if (channelMode & 0x4) > 0 {
+		_ = read(2)
+	}
+	if channelMode == 0x2 {
+		dsurmod := read(2)
+		if dsurmod == 0x2 {
+			a.AudioMode = stream.AudioModeSurround
+		}
+	}
+	lfeOn := read(1)
+	dialNorm := read(5)
+	if read(1) == 1 {
+		_ = read(8)
+	}
+	if read(1) == 1 {
+		_ = read(8)
+	}
+	if read(1) == 1 {
+		_ = read(7)
+	}
+	if channelMode == 0 {
+		_ = read(5)
+		if read(1) == 1 {
+			_ = read(8)
+		}
+		if read(1) == 1 {
+			_ = read(8)
+		}
+		if read(1) == 1 {
+			_ = read(7)
+		}
+	}
+	_ = read(2)
+	if bsid == 6 {
+		if read(1) == 1 {
+			_ = read(14)
+		}
+		if read(1) == 1 {
+			dsurexmod := read(2)
+			_ = read(2) // dheadphonmod
+			_ = read(10)
+			if dsurexmod == 2 {
+				a.AudioMode = stream.AudioModeExtended
+			}
+		}
+	}
 
 	if bsid <= 10 {
 		sampleRates := []int{48000, 44100, 32000}
-		if fscod < 3 {
-			a.SampleRate = sampleRates[fscod]
+		if srCode < 3 {
+			a.SampleRate = sampleRates[srCode]
 		}
-		if int(frmsizecod/2) < len(ac3BitrateKbps) {
-			a.BitRate = int64(ac3BitrateKbps[frmsizecod/2] * 1000)
+		if int(frameSizeCode/2) < len(ac3BitrateKbps) {
+			a.BitRate = int64(ac3BitrateKbps[frameSizeCode/2] * 1000)
 		}
-		if int(acmod) < len(ac3Channels) {
-			a.ChannelCount = ac3Channels[acmod]
+		if int(channelMode) < len(ac3Channels) {
+			a.ChannelCount = ac3Channels[channelMode]
 		}
-		if lfeon > 0 {
+		if lfeOn > 0 {
 			a.LFE = 1
+		}
+		a.DialNorm = -int(dialNorm)
+		if a.AudioMode == stream.AudioModeUnknown {
+			switch channelMode {
+			case 0:
+				a.AudioMode = stream.AudioModeDualMono
+			case 2:
+				a.AudioMode = stream.AudioModeStereo
+			}
 		}
 		a.IsInitialized = true
 		return
@@ -54,14 +111,18 @@ func ScanAC3(a *stream.AudioStream, data []byte) {
 
 	// E-AC3 minimal parse
 	br = buffer.NewBitReader(data)
-	_, _ = br.ReadBits(16)
-	_, _ = br.ReadBits(16)
-	_, _ = br.ReadBits(2)  // strmtyp
-	_, _ = br.ReadBits(3)  // substreamid
-	_, _ = br.ReadBits(11) // frmsiz
-	fscod, _ = br.ReadBits(2)
+	read = func(bits int) uint64 {
+		v, _ := br.ReadBits(bits)
+		return v
+	}
+	_ = read(16) // sync
+	_ = read(16) // crc1
+	_ = read(2)  // strmtyp
+	_ = read(3)  // substreamid
+	_ = read(11) // frmsiz
+	fscod := read(2)
 	if fscod == 3 {
-		fscod2, _ := br.ReadBits(2)
+		fscod2 := read(2)
 		sampleRates2 := []int{24000, 22050, 16000}
 		if fscod2 < 3 {
 			a.SampleRate = sampleRates2[fscod2]
@@ -71,16 +132,25 @@ func ScanAC3(a *stream.AudioStream, data []byte) {
 		if fscod < 3 {
 			a.SampleRate = sampleRates[fscod]
 		}
-		_, _ = br.ReadBits(2) // numblkscod
+		_ = read(2) // numblkscod
 	}
-	acmod, _ = br.ReadBits(3)
-	lfeon, _ = br.ReadBits(1)
+	acmod := read(3)
+	lfeon := read(1)
 	if int(acmod) < len(ac3Channels) {
 		a.ChannelCount = ac3Channels[acmod]
 	}
 	if lfeon > 0 {
 		a.LFE = 1
 	}
+	if a.AudioMode == stream.AudioModeUnknown {
+		switch acmod {
+		case 0:
+			a.AudioMode = stream.AudioModeDualMono
+		case 2:
+			a.AudioMode = stream.AudioModeStereo
+		}
+	}
+	// Atmos JOC detection not fully implemented; mark extensions for E-AC3
 	a.HasExtensions = true
 	a.IsInitialized = true
 }

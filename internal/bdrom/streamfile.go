@@ -4,40 +4,66 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"os"
+	"math"
 	"strings"
 
 	"github.com/autobrr/go-bdinfo/internal/codec"
+	"github.com/autobrr/go-bdinfo/internal/fs"
 	"github.com/autobrr/go-bdinfo/internal/settings"
 	"github.com/autobrr/go-bdinfo/internal/stream"
 )
 
 const (
-	maxStreamData = 1024 * 1024
-	maxScanBytes  = 100 * 1024 * 1024
+	maxStreamData   = 5 * 1024 * 1024
+	partialScanBytes = 100 * 1024 * 1024
 )
 
 type InterleavedFile struct {
-	Path string
-	Name string
-	Size int64
+	FileInfo fs.FileInfo
+	Name     string
+	Size     int64
+}
+
+type StreamDiagnostics struct {
+	Bytes   uint64
+	Packets uint64
+	Marker  float64
+	Interval float64
+	Tag     string
 }
 
 type StreamFile struct {
-	Path string
-	Name string
-	Size int64
-	Length float64
+	FileInfo fs.FileInfo
+	Name     string
+	Size     int64
+	Length   float64
 	InterleavedFile *InterleavedFile
-	Streams map[uint16]stream.Info
+	Streams  map[uint16]stream.Info
+	StreamDiagnostics map[uint16][]StreamDiagnostics
 }
 
-func NewStreamFile(path string) *StreamFile {
-	return &StreamFile{
-		Path: path,
-		Name: strings.ToUpper(filepathBase(path)),
-		Streams: make(map[uint16]stream.Info),
+type streamState struct {
+	windowPackets uint64
+	windowBytes   uint64
+	ptsPrev       uint64
+	ptsCount      uint64
+	ptsLast       uint64
+	lastDiff      uint64
+	codecData     []byte
+	streamTag     string
+}
+
+func NewStreamFile(fileInfo fs.FileInfo) *StreamFile {
+	streamFile := &StreamFile{
+		FileInfo: fileInfo,
+		Name:     strings.ToUpper(fileInfo.Name()),
+		Streams:  make(map[uint16]stream.Info),
+		StreamDiagnostics: make(map[uint16][]StreamDiagnostics),
 	}
+	if fileInfo != nil {
+		streamFile.Size = fileInfo.Length()
+	}
+	return streamFile
 }
 
 func (s *StreamFile) DisplayName(settings settings.Settings) string {
@@ -47,10 +73,11 @@ func (s *StreamFile) DisplayName(settings settings.Settings) string {
 	return s.Name
 }
 
-func (s *StreamFile) Scan(playlists []*PlaylistFile) error {
-	if s.Path == "" {
+func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
+	if s.FileInfo == nil {
 		return nil
 	}
+
 	// ensure streams map populated from clip info
 	if len(s.Streams) == 0 {
 		for _, pl := range playlists {
@@ -79,16 +106,26 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile) error {
 	}
 	s.Length = length
 
-	f, err := os.Open(s.Path)
+	scanSettings := settings.Settings{}
+	if len(playlists) > 0 {
+		scanSettings = playlists[0].Settings
+	}
+
+	fileInfo := s.FileInfo
+	if scanSettings.EnableSSIF && s.InterleavedFile != nil && s.InterleavedFile.FileInfo != nil {
+		fileInfo = s.InterleavedFile.FileInfo
+	}
+	if fileInfo == nil {
+		return fmt.Errorf("missing stream file info")
+	}
+
+	f, err := fileInfo.OpenRead()
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	info, err := f.Stat()
-	if err == nil {
-		s.Size = info.Size()
-	}
+	s.Size = fileInfo.Length()
 
 	reader := bufio.NewReaderSize(f, 1<<20)
 	first := make([]byte, 192)
@@ -108,19 +145,28 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile) error {
 		return fmt.Errorf("invalid TS sync for %s", s.Name)
 	}
 
-	buffers := map[uint16][]byte{}
-	packetCounts := map[uint16]uint64{}
-	payloadBytes := map[uint16]uint64{}
+	states := make(map[uint16]*streamState)
+	for pid := range s.Streams {
+		states[pid] = &streamState{codecData: make([]byte, 0, maxStreamData)}
+		if _, ok := s.StreamDiagnostics[pid]; !ok {
+			s.StreamDiagnostics[pid] = nil
+		}
+	}
 
 	processed := int64(0)
+	firstPTS := uint64(0)
+	lastPTS := uint64(0)
+
 	processPacket := func(pkt []byte) {
 		if len(pkt) <= syncOffset || pkt[syncOffset] != 0x47 {
 			return
 		}
 		pid := (uint16(pkt[syncOffset+1]&0x1f) << 8) | uint16(pkt[syncOffset+2])
-		if _, ok := s.Streams[pid]; !ok {
+		state, ok := states[pid]
+		if !ok {
 			return
 		}
+
 		payloadStart := (pkt[syncOffset+1] & 0x40) != 0
 		adaptation := (pkt[syncOffset+3] >> 4) & 0x3
 		idx := syncOffset + 4
@@ -138,27 +184,59 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile) error {
 			return
 		}
 		payload := pkt[idx:]
-		if payloadStart && len(payload) > 9 {
-			if payload[0] == 0x00 && payload[1] == 0x00 && payload[2] == 0x01 {
-				hdrLen := int(payload[8])
-				if 9+hdrLen < len(payload) {
-					payload = payload[9+hdrLen:]
-				} else {
-					payload = nil
+		if len(payload) == 0 {
+			return
+		}
+
+		state.windowPackets++
+		state.windowBytes += uint64(len(payload))
+
+		payloadOffset := 0
+		if payloadStart && len(payload) > 9 && payload[0] == 0x00 && payload[1] == 0x00 && payload[2] == 0x01 {
+			hdrLen := int(payload[8])
+			if 9+hdrLen <= len(payload) {
+				payloadOffset = 9 + hdrLen
+			}
+
+			ptsDtsFlags := (payload[7] >> 6) & 0x03
+			if ptsDtsFlags >= 2 && len(payload) >= 14 {
+				pts := parsePTS(payload[9:14])
+				if pts > 0 {
+					if state.ptsCount > 0 && state.ptsPrev != pts {
+						diff := pts - state.ptsPrev
+						if pts < state.ptsPrev {
+							diff = (1 << 33) + pts - state.ptsPrev
+						}
+						state.lastDiff = diff
+						if st := s.Streams[pid]; st != nil && st.Base().IsVideoStream() {
+							s.updateStreamBitrates(playlists, states, pid, pts, diff)
+							if firstPTS == 0 || pts < firstPTS {
+								firstPTS = pts
+							}
+							if pts > lastPTS {
+								lastPTS = pts
+							}
+							if lastPTS > firstPTS {
+								s.Length = float64(lastPTS-firstPTS) / 90000.0
+							}
+						}
+					}
+					state.ptsPrev = pts
+					state.ptsLast = pts
+					state.ptsCount++
 				}
 			}
 		}
-		if payload == nil {
-			return
+
+		if payloadOffset < len(payload) {
+			payload = payload[payloadOffset:]
 		}
-		packetCounts[pid]++
-		payloadBytes[pid] += uint64(len(payload))
-		if len(buffers[pid]) < maxStreamData {
-			need := maxStreamData - len(buffers[pid])
+		if len(state.codecData) < maxStreamData && len(payload) > 0 {
+			need := maxStreamData - len(state.codecData)
 			if len(payload) > need {
 				payload = payload[:need]
 			}
-			buffers[pid] = append(buffers[pid], payload...)
+			state.codecData = append(state.codecData, payload...)
 		}
 	}
 
@@ -167,7 +245,7 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile) error {
 
 	buf := make([]byte, packetSize)
 	for {
-		if processed >= maxScanBytes {
+		if !full && processed >= partialScanBytes {
 			break
 		}
 		n, err := io.ReadFull(reader, buf)
@@ -176,33 +254,41 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile) error {
 		}
 		processed += int64(n)
 		processPacket(buf[:packetSize])
-		complete := true
-		for pid := range s.Streams {
-			if len(buffers[pid]) < maxStreamData {
-				complete = false
+
+		if !full {
+			complete := true
+			for _, state := range states {
+				if len(state.codecData) < maxStreamData {
+					complete = false
+					break
+				}
+			}
+			if complete {
 				break
 			}
 		}
-		if complete {
-			break
+	}
+
+	// flush remaining window bytes based on last video PTS
+	for pid, state := range states {
+		st := s.Streams[pid]
+		if st == nil || !st.Base().IsVideoStream() {
+			continue
+		}
+		if state.ptsLast > 0 && state.lastDiff > 0 {
+			s.updateStreamBitrates(playlists, states, pid, state.ptsLast, state.lastDiff)
 		}
 	}
 
 	for pid, st := range s.Streams {
-		st.Base().PacketCount = packetCounts[pid]
-		st.Base().PayloadBytes = payloadBytes[pid]
-		if s.Length > 0 {
-			st.Base().PacketSeconds = s.Length
-			st.Base().BitRate = int64(float64(payloadBytes[pid]) * 8.0 / s.Length)
-		}
-		data := buffers[pid]
+		data := states[pid].codecData
 		switch concrete := st.(type) {
 		case *stream.VideoStream:
 			switch concrete.StreamType {
 			case stream.StreamTypeAVCVideo:
-				codec.ScanAVC(concrete, data, nil)
+				codec.ScanAVC(concrete, data, &states[pid].streamTag)
 			case stream.StreamTypeHEVCVideo:
-				codec.ScanHEVC(concrete, data)
+				codec.ScanHEVC(concrete, data, scanSettings)
 			case stream.StreamTypeMPEG2Video:
 				codec.ScanMPEG2(concrete, data)
 			case stream.StreamTypeVC1Video:
@@ -228,22 +314,119 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile) error {
 		}
 	}
 
-	// update clips with packet counts based on length
-	if s.Length > 0 && s.Size > 0 {
-		totalPackets := uint64(s.Size / int64(packetSize))
-		for _, pl := range playlists {
-			for _, clip := range pl.StreamClips {
-				if clip.StreamFile == s {
-					ratio := clip.Length / s.Length
-					if ratio > 1 {
-						ratio = 1
+	return nil
+}
+
+func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, states map[uint16]*streamState, ptsPID uint16, pts uint64, ptsDiff uint64) {
+	if playlists == nil {
+		return
+	}
+	for pid, state := range states {
+		if state.windowPackets == 0 {
+			continue
+		}
+		if base, ok := s.Streams[pid]; ok {
+			if base.Base().IsVideoStream() && pid != ptsPID {
+				continue
+			}
+		}
+		s.updateStreamBitrate(playlists, pid, pts, ptsDiff, state)
+	}
+
+	for _, playlist := range playlists {
+		packetSeconds := 0.0
+		for _, clip := range playlist.StreamClips {
+			if clip.AngleIndex == 0 {
+				packetSeconds += clip.PacketSeconds
+			}
+		}
+		if packetSeconds <= 0 {
+			continue
+		}
+		for _, playlistStream := range playlist.SortedStreams {
+			if playlistStream.Base().IsVBR {
+				playlistStream.Base().BitRate = int64(math.Round(float64(playlistStream.Base().PayloadBytes) * 8.0 / packetSeconds))
+			}
+		}
+	}
+}
+
+func (s *StreamFile) updateStreamBitrate(playlists []*PlaylistFile, pid uint16, pts uint64, ptsDiff uint64, state *streamState) {
+	if playlists == nil || state == nil {
+		return
+	}
+	streamTime := float64(pts) / 90000.0
+	streamInterval := float64(ptsDiff) / 90000.0
+	streamOffset := streamTime + streamInterval
+
+	for _, playlist := range playlists {
+		for _, clip := range playlist.StreamClips {
+			if clip.Name != s.Name {
+				continue
+			}
+			if streamTime != 0 && (streamTime < clip.TimeIn || streamTime > clip.TimeOut) {
+				continue
+			}
+			clip.PayloadBytes += state.windowBytes
+			clip.PacketCount += state.windowPackets
+
+			if streamOffset > clip.TimeIn && streamOffset-clip.TimeIn > clip.PacketSeconds {
+				clip.PacketSeconds = streamOffset - clip.TimeIn
+			}
+
+			playlistStreams := playlist.Streams
+			if clip.AngleIndex > 0 && clip.AngleIndex <= len(playlist.AngleStreams) {
+				playlistStreams = playlist.AngleStreams[clip.AngleIndex-1]
+			}
+
+			if playlistStreams != nil {
+				if streamInfo, ok := playlistStreams[pid]; ok {
+					streamInfo.Base().PayloadBytes += state.windowBytes
+					streamInfo.Base().PacketCount += state.windowPackets
+
+					if streamInfo.Base().IsVideoStream() {
+						streamInfo.Base().PacketSeconds += streamInterval
+						if streamInfo.Base().PacketSeconds > 0 {
+							streamInfo.Base().ActiveBitRate = int64(math.Round(float64(streamInfo.Base().PayloadBytes) * 8.0 / streamInfo.Base().PacketSeconds))
+						}
 					}
-					clip.PacketCount = uint64(float64(totalPackets) * ratio)
-					clip.PacketSeconds = clip.Length
+					if streamInfo.Base().StreamType == stream.StreamTypeAC3TrueHDAudio {
+						if audio, ok := streamInfo.(*stream.AudioStream); ok && audio.CoreStream != nil {
+							streamInfo.Base().ActiveBitRate -= audio.CoreStream.BitRate
+						}
+					}
 				}
 			}
 		}
 	}
 
-	return nil
+	if streamInfo, ok := s.Streams[pid]; ok {
+		streamInfo.Base().PayloadBytes += state.windowBytes
+		streamInfo.Base().PacketCount += state.windowPackets
+		if streamInfo.Base().IsVideoStream() {
+			streamInfo.Base().PacketSeconds += streamInterval
+			s.StreamDiagnostics[pid] = append(s.StreamDiagnostics[pid], StreamDiagnostics{
+				Marker:  streamTime,
+				Interval: streamInterval,
+				Bytes:   state.windowBytes,
+				Packets: state.windowPackets,
+				Tag:     state.streamTag,
+			})
+		}
+	}
+
+	state.windowPackets = 0
+	state.windowBytes = 0
+}
+
+func parsePTS(data []byte) uint64 {
+	if len(data) < 5 {
+		return 0
+	}
+	pts := uint64(data[0]&0x0E) << 29
+	pts |= uint64(data[1]) << 22
+	pts |= uint64(data[2]&0xFE) << 14
+	pts |= uint64(data[3]) << 7
+	pts |= uint64(data[4]) >> 1
+	return pts
 }

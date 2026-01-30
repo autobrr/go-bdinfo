@@ -3,30 +3,33 @@ package bdrom
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
+	"github.com/autobrr/go-bdinfo/internal/fs"
 	"github.com/autobrr/go-bdinfo/internal/stream"
 )
 
 type StreamClipFile struct {
-	Path     string
+	FileInfo fs.FileInfo
 	Name     string
 	FileType string
 	IsValid  bool
 	Streams  map[uint16]stream.Info
 }
 
-func NewStreamClipFile(path string) *StreamClipFile {
+func NewStreamClipFile(fileInfo fs.FileInfo) *StreamClipFile {
 	return &StreamClipFile{
-		Path:    path,
-		Name:    strings.ToUpper(filepathBase(path)),
+		FileInfo: fileInfo,
+		Name:    strings.ToUpper(fileInfo.Name()),
 		Streams: make(map[uint16]stream.Info),
 	}
 }
 
 func (s *StreamClipFile) Scan() error {
-	f, err := os.Open(s.Path)
+	if s.FileInfo == nil {
+		return fmt.Errorf("clip info file missing")
+	}
+	f, err := s.FileInfo.OpenRead()
 	if err != nil {
 		return err
 	}

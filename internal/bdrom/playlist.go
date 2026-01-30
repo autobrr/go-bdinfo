@@ -3,17 +3,17 @@ package bdrom
 import (
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
+	"github.com/autobrr/go-bdinfo/internal/fs"
 	"github.com/autobrr/go-bdinfo/internal/settings"
 	"github.com/autobrr/go-bdinfo/internal/stream"
 	"github.com/autobrr/go-bdinfo/internal/util"
 )
 
 type PlaylistFile struct {
-	Path string
+	FileInfo fs.FileInfo
 	Name string
 	FileType string
 	IsInitialized bool
@@ -39,10 +39,10 @@ type PlaylistFile struct {
 	GraphicsStreams []*stream.GraphicsStream
 }
 
-func NewPlaylistFile(path string, settings settings.Settings) *PlaylistFile {
+func NewPlaylistFile(fileInfo fs.FileInfo, settings settings.Settings) *PlaylistFile {
 	return &PlaylistFile{
-		Path: path,
-		Name: strings.ToUpper(filepathBase(path)),
+		FileInfo: fileInfo,
+		Name: strings.ToUpper(fileInfo.Name()),
 		Settings: settings,
 		Streams: make(map[uint16]stream.Info),
 		PlaylistStreams: make(map[uint16]stream.Info),
@@ -149,7 +149,10 @@ func (p *PlaylistFile) TotalAngleBitRate() uint64 {
 }
 
 func (p *PlaylistFile) Scan(streamFiles map[string]*StreamFile, clipFiles map[string]*StreamClipFile) error {
-	f, err := os.Open(p.Path)
+	if p.FileInfo == nil {
+		return fmt.Errorf("playlist file missing")
+	}
+	f, err := p.FileInfo.OpenRead()
 	if err != nil {
 		return err
 	}
@@ -412,6 +415,11 @@ func (p *PlaylistFile) ClearBitrates() {
 			st.Base().PacketCount = 0
 			st.Base().PacketSeconds = 0
 		}
+		if clip.StreamFile.StreamDiagnostics != nil {
+			for pid := range clip.StreamFile.StreamDiagnostics {
+				delete(clip.StreamFile.StreamDiagnostics, pid)
+			}
+		}
 	}
 
 	for _, st := range p.SortedStreams {
@@ -505,6 +513,17 @@ func (p *PlaylistFile) loadStreamClips() {
 	}
 
 	if reference.StreamFile != nil {
+		if p.Settings.EnableSSIF && reference.StreamFile.InterleavedFile != nil {
+			if ssifStream, ok := reference.StreamFile.Streams[4114]; ok {
+				if _, exists := p.Streams[4114]; !exists {
+					clone := ssifStream.Clone()
+					p.Streams[4114] = clone
+					if vs, ok := clone.(*stream.VideoStream); ok {
+						p.VideoStreams = append(p.VideoStreams, vs)
+					}
+				}
+			}
+		}
 		for pid, clipStream := range reference.StreamFile.Streams {
 			if existing, ok := p.Streams[pid]; ok {
 				if existing.Base().StreamType != clipStream.Base().StreamType {
@@ -529,6 +548,9 @@ func (p *PlaylistFile) loadStreamClips() {
 						if cs.LFE > ex.LFE {
 							ex.LFE = cs.LFE
 						}
+						if cs.SampleRate > ex.SampleRate {
+							ex.SampleRate = cs.SampleRate
+						}
 						if cs.BitDepth > ex.BitDepth {
 							ex.BitDepth = cs.BitDepth
 						}
@@ -536,13 +558,34 @@ func (p *PlaylistFile) loadStreamClips() {
 						ex.HasExtensions = cs.HasExtensions
 						ex.AudioMode = cs.AudioMode
 						ex.CoreStream = cs.CoreStream
+						ex.ExtendedData = cs.ExtendedData
+					}
+				case *stream.GraphicsStream:
+					if cs, ok := clipStream.(*stream.GraphicsStream); ok {
+						ex.Captions = cs.Captions
+						ex.ForcedCaptions = cs.ForcedCaptions
+						ex.Width = cs.Width
+						ex.Height = cs.Height
+						ex.CaptionIDs = cs.CaptionIDs
+						ex.LastFrame = cs.LastFrame
 					}
 				}
 			}
 		}
 	}
 
+	p.AngleStreams = nil
+	if p.AngleCount > 0 {
+		p.AngleStreams = make([]map[uint16]stream.Info, p.AngleCount)
+		for i := 0; i < p.AngleCount; i++ {
+			p.AngleStreams[i] = make(map[uint16]stream.Info)
+		}
+	}
+
 	if !p.Settings.KeepStreamOrder {
+		sort.Slice(p.VideoStreams, func(i, j int) bool {
+			return compareVideoStreams(p.VideoStreams[i], p.VideoStreams[j]) < 0
+		})
 		sort.Slice(p.AudioStreams, func(i, j int) bool {
 			return compareAudioStreams(p.AudioStreams[i], p.AudioStreams[j]) < 0
 		})
@@ -556,6 +599,12 @@ func (p *PlaylistFile) loadStreamClips() {
 
 	for _, st := range p.VideoStreams {
 		p.SortedStreams = append(p.SortedStreams, st)
+		for i := 0; i < p.AngleCount; i++ {
+			clone := st.Clone()
+			clone.Base().AngleIndex = i + 1
+			p.AngleStreams[i][clone.Base().PID] = clone
+			p.SortedStreams = append(p.SortedStreams, clone)
+		}
 	}
 	for _, st := range p.AudioStreams {
 		p.SortedStreams = append(p.SortedStreams, st)
@@ -672,6 +721,31 @@ func compareAudioStreams(x, y *stream.AudioStream) int {
 	}
 	if x.StreamType > y.StreamType {
 		return 1
+	}
+	return 0
+}
+
+func compareVideoStreams(x, y *stream.VideoStream) int {
+	if x == nil && y == nil {
+		return 0
+	}
+	if x == nil {
+		return 1
+	}
+	if y == nil {
+		return -1
+	}
+	if x.Height > y.Height {
+		return -1
+	}
+	if y.Height > x.Height {
+		return 1
+	}
+	if x.PID > y.PID {
+		return 1
+	}
+	if y.PID > x.PID {
+		return -1
 	}
 	return 0
 }

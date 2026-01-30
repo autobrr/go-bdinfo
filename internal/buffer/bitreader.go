@@ -18,6 +18,16 @@ func (r *BitReader) BytesLeft() int {
 	return len(r.data) - r.bytePos
 }
 
+// Position returns the current byte position.
+func (r *BitReader) Position() int {
+	return r.bytePos
+}
+
+// Length returns total buffer length.
+func (r *BitReader) Length() int {
+	return len(r.data)
+}
+
 func (r *BitReader) ReadBit() (uint64, bool) {
 	if r.bytePos >= len(r.data) {
 		return 0, false
@@ -63,9 +73,81 @@ func (r *BitReader) ReadByte() (byte, bool) {
 	return byte(val), true
 }
 
+// ReadBytes reads n bytes.
+func (r *BitReader) ReadBytes(n int) ([]byte, bool) {
+	if n <= 0 {
+		return []byte{}, true
+	}
+	out := make([]byte, n)
+	for i := 0; i < n; i++ {
+		b, ok := r.ReadByte()
+		if !ok {
+			return nil, false
+		}
+		out[i] = b
+	}
+	return out, true
+}
+
+// ReadUInt16 reads a big-endian uint16.
+func (r *BitReader) ReadUInt16() (uint16, bool) {
+	b1, ok := r.ReadByte()
+	if !ok {
+		return 0, false
+	}
+	b2, ok := r.ReadByte()
+	if !ok {
+		return 0, false
+	}
+	return uint16(b1)<<8 | uint16(b2), true
+}
+
+// ReadUInt32 reads a big-endian uint32.
+func (r *BitReader) ReadUInt32() (uint32, bool) {
+	b1, ok := r.ReadByte()
+	if !ok {
+		return 0, false
+	}
+	b2, ok := r.ReadByte()
+	if !ok {
+		return 0, false
+	}
+	b3, ok := r.ReadByte()
+	if !ok {
+		return 0, false
+	}
+	b4, ok := r.ReadByte()
+	if !ok {
+		return 0, false
+	}
+	return uint32(b1)<<24 | uint32(b2)<<16 | uint32(b3)<<8 | uint32(b4), true
+}
+
 func (r *BitReader) SkipBits(n int) bool {
 	_, ok := r.ReadBits(n)
 	return ok
+}
+
+// AlignByte advances to the next byte boundary.
+func (r *BitReader) AlignByte() {
+	if r.bitPos == 0 {
+		return
+	}
+	r.bitPos = 0
+	r.bytePos++
+}
+
+// Skip skips n bytes.
+func (r *BitReader) Skip(n int) bool {
+	if n <= 0 {
+		return true
+	}
+	for i := 0; i < n; i++ {
+		if _, ok := r.ReadByte(); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // ReadUE reads an unsigned Exp-Golomb code.
@@ -103,4 +185,22 @@ func (r *BitReader) ReadSE() (int64, bool) {
 		return -(k / 2), true
 	}
 	return (k + 1) / 2, true
+}
+
+// ReadExpGolomb reads an unsigned Exp-Golomb code as int.
+func (r *BitReader) ReadExpGolomb() (int, bool) {
+	val, ok := r.ReadUE()
+	if !ok {
+		return 0, false
+	}
+	return int(val), true
+}
+
+// ReadSignedExpGolomb reads a signed Exp-Golomb code as int.
+func (r *BitReader) ReadSignedExpGolomb() (int, bool) {
+	val, ok := r.ReadSE()
+	if !ok {
+		return 0, false
+	}
+	return int(val), true
 }
