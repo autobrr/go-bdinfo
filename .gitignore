@@ -5,6 +5,9 @@
 # reports
 *.bdinfo
 
+# reference source
+BDInfo-master/
+
 # C/C++
 *.c
 *.h

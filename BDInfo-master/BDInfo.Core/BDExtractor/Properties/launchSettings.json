@@ -1,8 +1,0 @@
-{
-  "profiles": {
-    "BDExtractor": {
-      "commandName": "Project",
-      "commandLineArgs": "-p \"C:\\p\\frosty.iso\" -o \"C:\\p\\test\""
-    }
-  }
-}
