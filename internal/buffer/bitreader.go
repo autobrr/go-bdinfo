@@ -2,9 +2,9 @@ package buffer
 
 // BitReader reads MSB-first bits from a byte slice.
 type BitReader struct {
-	data []byte
+	data    []byte
 	bytePos int
-	bitPos uint8
+	bitPos  uint8
 }
 
 func NewBitReader(data []byte) *BitReader {
@@ -23,9 +23,33 @@ func (r *BitReader) Position() int {
 	return r.bytePos
 }
 
+// BitPosition returns the current position in bits.
+func (r *BitReader) BitPosition() int {
+	return r.bytePos*8 + int(r.bitPos)
+}
+
 // Length returns total buffer length.
 func (r *BitReader) Length() int {
 	return len(r.data)
+}
+
+// BitsRemaining returns remaining bits in the buffer.
+func (r *BitReader) BitsRemaining() int {
+	remain := len(r.data)*8 - r.BitPosition()
+	if remain < 0 {
+		return 0
+	}
+	return remain
+}
+
+// SetBitPosition sets the current position in bits.
+func (r *BitReader) SetBitPosition(bitPos int) bool {
+	if bitPos < 0 || bitPos > len(r.data)*8 {
+		return false
+	}
+	r.bytePos = bitPos / 8
+	r.bitPos = uint8(bitPos % 8)
+	return true
 }
 
 func (r *BitReader) ReadBit() (uint64, bool) {
