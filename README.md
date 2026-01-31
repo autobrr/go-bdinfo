@@ -7,8 +7,8 @@ Go rewrite of BDInfo.
 - Homebrew (macOS):
 
 ```sh
-brew tap s0up4200/go-bdinfo
-brew install --cask bdinfo
+brew tap s0up4200/go-bdinfo https://github.com/s0up4200/go-bdinfo
+brew install --cask s0up4200/go-bdinfo/bdinfo
 ```
 
 - Go install (requires Go toolchain):
