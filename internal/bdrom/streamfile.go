@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"strings"
+	"sync"
 
 	"github.com/s0up4200/go-bdinfo/internal/codec"
 	"github.com/s0up4200/go-bdinfo/internal/fs"
@@ -18,6 +19,39 @@ const (
 	maxStreamDataAudio = 256 * 1024
 	maxStreamDataOther = 128 * 1024
 )
+
+var (
+	videoBufPool = sync.Pool{New: func() any { return make([]byte, 0, maxStreamDataVideo) }}
+	audioBufPool = sync.Pool{New: func() any { return make([]byte, 0, maxStreamDataAudio) }}
+	otherBufPool = sync.Pool{New: func() any { return make([]byte, 0, maxStreamDataOther) }}
+)
+
+func getCodecBuffer(capacity int) []byte {
+	switch capacity {
+	case maxStreamDataVideo:
+		return videoBufPool.Get().([]byte)[:0]
+	case maxStreamDataAudio:
+		return audioBufPool.Get().([]byte)[:0]
+	case maxStreamDataOther:
+		return otherBufPool.Get().([]byte)[:0]
+	default:
+		return make([]byte, 0, capacity)
+	}
+}
+
+func putCodecBuffer(buf []byte) {
+	if buf == nil {
+		return
+	}
+	switch cap(buf) {
+	case maxStreamDataVideo:
+		videoBufPool.Put(buf[:0])
+	case maxStreamDataAudio:
+		audioBufPool.Put(buf[:0])
+	case maxStreamDataOther:
+		otherBufPool.Put(buf[:0])
+	}
+}
 
 type InterleavedFile struct {
 	FileInfo fs.FileInfo
@@ -168,7 +202,7 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 			}
 		}
 		states[pid] = &streamState{
-			codecData:          make([]byte, 0, dataCap),
+			codecData:          getCodecBuffer(dataCap),
 			pesPacketRemaining: -2,
 			collectDiagnostics: collectDiagnostics,
 		}
@@ -178,6 +212,15 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 			}
 		}
 	}
+	defer func() {
+		for _, state := range states {
+			if state == nil || state.codecData == nil {
+				continue
+			}
+			putCodecBuffer(state.codecData)
+			state.codecData = nil
+		}
+	}()
 
 	firstTS := uint64(0)
 	lastTS := uint64(0)
@@ -194,72 +237,6 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 		}
 		st, known := s.Streams[pid]
 		isVideo := st != nil && st.Base().IsVideoStream()
-		handleTimestamp := func(ts uint64) {
-			if ts == 0 {
-				return
-			}
-			if state.tsCount > 0 {
-				diff := int64(ts) - int64(state.dtsPrev)
-				state.lastDiff = diff
-				if isVideo {
-					s.updateStreamBitrates(playlists, states, pid, ts, diff)
-					if firstTS == 0 || ts < firstTS {
-						firstTS = ts
-					}
-					if ts > lastTS {
-						lastTS = ts
-					}
-					if lastTS > firstTS {
-						s.Length = float64(lastTS-firstTS) / 90000.0
-					}
-				}
-			}
-			state.dtsPrev = ts
-			state.tsLast = ts
-			state.tsCount++
-		}
-		parsePESHeaderTimestamp := func() {
-			if !isVideo || state.pesHeaderParsed {
-				return
-			}
-			switch state.pesPtsDtsFlags {
-			case 2:
-				if len(state.pesHeaderBuf) < 14 {
-					return
-				}
-				pts := parsePTS(state.pesHeaderBuf[9:14])
-				if pts > 0 {
-					state.ptsLast = pts
-				}
-				if len(state.pesHeaderBuf) >= 19 && validTimestamp(state.pesHeaderBuf[14:19], 0x10) {
-					dts := parsePTS(state.pesHeaderBuf[14:19])
-					if dts > 0 {
-						handleTimestamp(dts)
-					} else {
-						handleTimestamp(pts)
-					}
-				} else {
-					handleTimestamp(pts)
-				}
-				state.pesHeaderParsed = true
-			case 3:
-				if len(state.pesHeaderBuf) < 19 {
-					return
-				}
-				pts := parsePTS(state.pesHeaderBuf[9:14])
-				if pts > state.ptsLast {
-					state.ptsLast = pts
-				}
-				dts := parsePTS(state.pesHeaderBuf[14:19])
-				if dts == 0 {
-					dts = pts
-				}
-				if dts > 0 {
-					handleTimestamp(dts)
-				}
-				state.pesHeaderParsed = true
-			}
-		}
 
 		payloadStart := (pkt[syncOffset+1] & 0x40) != 0
 		adaptation := (pkt[syncOffset+3] >> 4) & 0x3
@@ -332,7 +309,7 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 					}
 				}
 			}
-			parsePESHeaderTimestamp()
+			s.parsePESHeaderTimestamp(state, isVideo, playlists, states, pid, &firstTS, &lastTS)
 		}
 		if len(payload) == 0 {
 			return
@@ -444,6 +421,74 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	}
 
 	return nil
+}
+
+func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, states map[uint16]*streamState, pid uint16, state *streamState, ts uint64, isVideo bool, firstTS *uint64, lastTS *uint64) {
+	if ts == 0 {
+		return
+	}
+	if state.tsCount > 0 {
+		diff := int64(ts) - int64(state.dtsPrev)
+		state.lastDiff = diff
+		if isVideo {
+			s.updateStreamBitrates(playlists, states, pid, ts, diff)
+			if *firstTS == 0 || ts < *firstTS {
+				*firstTS = ts
+			}
+			if ts > *lastTS {
+				*lastTS = ts
+			}
+			if *lastTS > *firstTS {
+				s.Length = float64(*lastTS-*firstTS) / 90000.0
+			}
+		}
+	}
+	state.dtsPrev = ts
+	state.tsLast = ts
+	state.tsCount++
+}
+
+func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, playlists []*PlaylistFile, states map[uint16]*streamState, pid uint16, firstTS *uint64, lastTS *uint64) {
+	if !isVideo || state.pesHeaderParsed {
+		return
+	}
+	switch state.pesPtsDtsFlags {
+	case 2:
+		if len(state.pesHeaderBuf) < 14 {
+			return
+		}
+		pts := parsePTS(state.pesHeaderBuf[9:14])
+		if pts > 0 {
+			state.ptsLast = pts
+		}
+		if len(state.pesHeaderBuf) >= 19 && validTimestamp(state.pesHeaderBuf[14:19], 0x10) {
+			dts := parsePTS(state.pesHeaderBuf[14:19])
+			if dts > 0 {
+				s.handleTimestamp(playlists, states, pid, state, dts, isVideo, firstTS, lastTS)
+			} else {
+				s.handleTimestamp(playlists, states, pid, state, pts, isVideo, firstTS, lastTS)
+			}
+		} else {
+			s.handleTimestamp(playlists, states, pid, state, pts, isVideo, firstTS, lastTS)
+		}
+		state.pesHeaderParsed = true
+	case 3:
+		if len(state.pesHeaderBuf) < 19 {
+			return
+		}
+		pts := parsePTS(state.pesHeaderBuf[9:14])
+		if pts > state.ptsLast {
+			state.ptsLast = pts
+		}
+		dts := parsePTS(state.pesHeaderBuf[14:19])
+		if dts == 0 {
+			dts = pts
+		}
+		if dts > 0 {
+			s.handleTimestamp(playlists, states, pid, state, dts, isVideo, firstTS, lastTS)
+		}
+		state.pesHeaderParsed = true
+	}
 }
 
 func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, states map[uint16]*streamState, ptsPID uint16, pts uint64, ptsDiff int64) {
