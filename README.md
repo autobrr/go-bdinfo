@@ -28,10 +28,10 @@ Report default: `BDInfo_{0}.bdinfo` (disc label substituted).
 - `-g, --generatestreamdiagnostics`
 - `-e, --extendedstreamdiagnostics`
 
-## Releasing
+## Install
 
-- Tag a release like `vX.Y.Z`.
-- GitHub Actions runs GoReleaser.
-- Homebrew cask publishes to this repo under `Casks/`.
-- No extra token needed as long as Homebrew stays in this repo.
-- Install: `brew tap s0up4200/go-bdinfo` then `brew install --cask bdinfo`.
+- Homebrew (macOS): `brew tap s0up4200/go-bdinfo` then `brew install --cask bdinfo`.
+- Binaries: download the latest release from GitHub Releases.
+- Build from source:
+  - `go install github.com/s0up4200/go-bdinfo/cmd/bdinfo@latest`
+  - or `git clone https://github.com/s0up4200/go-bdinfo.git` then `go build ./cmd/bdinfo`
