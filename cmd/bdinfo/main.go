@@ -75,6 +75,7 @@ func run(args []string) error {
 	var genSummary optBool
 	var includeNotes optBool
 	var groupByTime optBool
+	var forumsOnly optBool
 
 	fs.StringVar(&pathLong, "path", "", "The path to iso or bluray folder")
 	fs.StringVar(&pathShort, "p", "", "The path to iso or bluray folder")
@@ -100,6 +101,8 @@ func run(args []string) error {
 	fs.Var(&includeNotes, "q", "Include version and notes inside report")
 	fs.Var(&groupByTime, "groupbytime", "Group by time")
 	fs.Var(&groupByTime, "j", "Group by time")
+	fs.Var(&forumsOnly, "forumsonly", "Output only the forums paste block")
+	fs.Var(&forumsOnly, "f", "Output only the forums paste block")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -145,6 +148,9 @@ func run(args []string) error {
 	}
 	if groupByTime.set {
 		s.GroupByTime = groupByTime.value
+	}
+	if forumsOnly.set {
+		s.ForumsOnly = forumsOnly.value
 	}
 
 	return runForPath(path, s)

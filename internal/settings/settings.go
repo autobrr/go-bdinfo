@@ -6,29 +6,31 @@ import "path/filepath"
 type Settings struct {
 	GenerateStreamDiagnostics bool
 	ExtendedStreamDiagnostics bool
-	EnableSSIF               bool
-	FilterLoopingPlaylists   bool
-	FilterShortPlaylists     bool
-	FilterShortPlaylistsVal  int
-	KeepStreamOrder          bool
-	GenerateTextSummary      bool
-	ReportFileName           string
-	IncludeVersionAndNotes   bool
-	GroupByTime              bool
+	EnableSSIF                bool
+	FilterLoopingPlaylists    bool
+	FilterShortPlaylists      bool
+	FilterShortPlaylistsVal   int
+	KeepStreamOrder           bool
+	GenerateTextSummary       bool
+	ReportFileName            string
+	IncludeVersionAndNotes    bool
+	GroupByTime               bool
+	ForumsOnly                bool
 }
 
 func Default(reportBaseDir string) Settings {
 	return Settings{
 		GenerateStreamDiagnostics: false,
 		ExtendedStreamDiagnostics: false,
-		EnableSSIF:               true,
-		FilterLoopingPlaylists:   false,
-		FilterShortPlaylists:     true,
-		FilterShortPlaylistsVal:  20,
-		KeepStreamOrder:          false,
-		GenerateTextSummary:      true,
-		ReportFileName:           filepath.Join(reportBaseDir, "BDInfo_{0}.bdinfo"),
-		IncludeVersionAndNotes:   false,
-		GroupByTime:              false,
+		EnableSSIF:                true,
+		FilterLoopingPlaylists:    false,
+		FilterShortPlaylists:      true,
+		FilterShortPlaylistsVal:   20,
+		KeepStreamOrder:           false,
+		GenerateTextSummary:       true,
+		ReportFileName:            filepath.Join(reportBaseDir, "BDInfo_{0}.bdinfo"),
+		IncludeVersionAndNotes:    false,
+		GroupByTime:               false,
+		ForumsOnly:                false,
 	}
 }

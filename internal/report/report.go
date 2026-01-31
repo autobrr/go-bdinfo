@@ -402,7 +402,40 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 		}
 	}
 
-	return reportName, os.WriteFile(reportName, []byte(b.String()), 0o644)
+	output := b.String()
+	if settings.ForumsOnly {
+		output = extractForumsBlocks(output)
+	}
+	return reportName, os.WriteFile(reportName, []byte(output), 0o644)
+}
+
+func extractForumsBlocks(report string) string {
+	const startMarker = "<--- BEGIN FORUMS PASTE --->"
+	const endMarker = "<---- END FORUMS PASTE ---->"
+	var out strings.Builder
+	rest := report
+	for {
+		start := strings.Index(rest, startMarker)
+		if start == -1 {
+			break
+		}
+		rest = rest[start:]
+		end := strings.Index(rest, endMarker)
+		if end == -1 {
+			break
+		}
+		end += len(endMarker)
+		if out.Len() > 0 {
+			out.WriteString("\n\n")
+		}
+		out.WriteString(rest[:end])
+		rest = rest[end:]
+	}
+	if out.Len() == 0 {
+		return report
+	}
+	out.WriteString("\n")
+	return out.String()
 }
 
 func formatMbps(bitrate uint64) string {
