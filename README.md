@@ -1,6 +1,6 @@
 # go-bdinfo
 
-Go rewrite of BDInfo. Uses BDInfo-master as reference implementation.
+Go rewrite of BDInfo.
 
 ## Usage
 

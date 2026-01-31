@@ -40,20 +40,22 @@ type StreamFile struct {
 }
 
 type streamState struct {
-	windowPackets      uint64
-	windowBytes        uint64
-	tsPrev             uint64
-	tsCount            uint64
-	tsLast             uint64
-	lastDiff           uint64
-	codecData          []byte
-	streamTag          string
-	pesHeaderRemaining int
-	pesPacketRemaining int
-	pesHeaderBuf       []byte
-	pesHeaderParsed    bool
-	pesPtsDtsFlags     byte
-	pesStarted         bool
+	windowPackets       uint64
+	windowBytes         uint64
+	dtsPrev             uint64
+	tsCount             uint64
+	tsLast              uint64
+	ptsLast             uint64
+	lastDiff            int64
+	codecData           []byte
+	streamTag           string
+	pesHeaderRemaining  int
+	pesHeaderExtraKnown bool
+	pesPacketRemaining  int
+	pesHeaderBuf        []byte
+	pesHeaderParsed     bool
+	pesPtsDtsFlags      byte
+	pesStarted          bool
 }
 
 func NewStreamFile(fileInfo fs.FileInfo) *StreamFile {
@@ -150,7 +152,7 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 
 	states := make(map[uint16]*streamState)
 	for pid := range s.Streams {
-		states[pid] = &streamState{codecData: make([]byte, 0, maxStreamData), pesPacketRemaining: -1}
+		states[pid] = &streamState{codecData: make([]byte, 0, maxStreamData), pesPacketRemaining: -2}
 		if _, ok := s.StreamDiagnostics[pid]; !ok {
 			s.StreamDiagnostics[pid] = nil
 		}
@@ -166,33 +168,19 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 		pid := (uint16(pkt[syncOffset+1]&0x1f) << 8) | uint16(pkt[syncOffset+2])
 		state, ok := states[pid]
 		if !ok {
-			state = &streamState{pesPacketRemaining: -1}
+			state = &streamState{pesPacketRemaining: -2}
 			states[pid] = state
 		}
-		_, known := s.Streams[pid]
-		parseHeaderTimestamp := func() {
-			if state.pesHeaderParsed || len(state.pesHeaderBuf) == 0 {
-				return
-			}
-			var ts uint64
-			if state.pesPtsDtsFlags == 2 && len(state.pesHeaderBuf) >= 14 {
-				ts = parsePTS(state.pesHeaderBuf[9:14])
-			} else if state.pesPtsDtsFlags == 3 && len(state.pesHeaderBuf) >= 19 {
-				ts = parsePTS(state.pesHeaderBuf[14:19])
-				if ts == 0 {
-					ts = parsePTS(state.pesHeaderBuf[9:14])
-				}
-			}
+		st, known := s.Streams[pid]
+		isVideo := st != nil && st.Base().IsVideoStream()
+		handleTimestamp := func(ts uint64) {
 			if ts == 0 {
 				return
 			}
 			if state.tsCount > 0 {
-				diff := ts - state.tsPrev
-				if ts < state.tsPrev {
-					diff = (1 << 33) + ts - state.tsPrev
-				}
+				diff := int64(ts) - int64(state.dtsPrev)
 				state.lastDiff = diff
-				if st := s.Streams[pid]; st != nil && st.Base().IsVideoStream() {
+				if isVideo {
 					s.updateStreamBitrates(playlists, states, pid, ts, diff)
 					if firstTS == 0 || ts < firstTS {
 						firstTS = ts
@@ -205,10 +193,51 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 					}
 				}
 			}
-			state.tsPrev = ts
+			state.dtsPrev = ts
 			state.tsLast = ts
 			state.tsCount++
-			state.pesHeaderParsed = true
+		}
+		parsePESHeaderTimestamp := func() {
+			if !isVideo || state.pesHeaderParsed {
+				return
+			}
+			switch state.pesPtsDtsFlags {
+			case 2:
+				if len(state.pesHeaderBuf) < 14 {
+					return
+				}
+				pts := parsePTS(state.pesHeaderBuf[9:14])
+				if pts > 0 {
+					state.ptsLast = pts
+				}
+				if len(state.pesHeaderBuf) >= 19 && validTimestamp(state.pesHeaderBuf[14:19], 0x10) {
+					dts := parsePTS(state.pesHeaderBuf[14:19])
+					if dts > 0 {
+						handleTimestamp(dts)
+					} else {
+						handleTimestamp(pts)
+					}
+				} else {
+					handleTimestamp(pts)
+				}
+				state.pesHeaderParsed = true
+			case 3:
+				if len(state.pesHeaderBuf) < 19 {
+					return
+				}
+				pts := parsePTS(state.pesHeaderBuf[9:14])
+				if pts > state.ptsLast {
+					state.ptsLast = pts
+				}
+				dts := parsePTS(state.pesHeaderBuf[14:19])
+				if dts == 0 {
+					dts = pts
+				}
+				if dts > 0 {
+					handleTimestamp(dts)
+				}
+				state.pesHeaderParsed = true
+			}
 		}
 
 		payloadStart := (pkt[syncOffset+1] & 0x40) != 0
@@ -232,37 +261,26 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 		if len(payload) == 0 {
 			return
 		}
-
 		if payloadStart {
 			state.pesHeaderRemaining = 0
-			state.pesPacketRemaining = -1
+			state.pesHeaderExtraKnown = false
+			state.pesPacketRemaining = -2
 			state.pesHeaderBuf = nil
 			state.pesHeaderParsed = false
 			state.pesPtsDtsFlags = 0
+			state.pesStarted = false
 		}
-
-		if payloadStart && len(payload) > 9 && payload[0] == 0x00 && payload[1] == 0x00 && payload[2] == 0x01 {
+		if payloadStart {
 			state.pesStarted = true
-			hdrLen := int(payload[8])
-			state.pesHeaderRemaining = 9 + hdrLen
-			state.pesPtsDtsFlags = (payload[7] >> 6) & 0x03
+			state.pesHeaderRemaining = 9
+			state.pesHeaderExtraKnown = false
+			state.pesHeaderParsed = false
+			state.pesPtsDtsFlags = 0
 			state.pesHeaderBuf = make([]byte, 0, 19)
-			if len(payload) >= 6 {
-				pesLen := int(payload[4])<<8 | int(payload[5])
-				if pesLen > 0 {
-					remaining := pesLen - (3 + hdrLen)
-					if remaining < 0 {
-						remaining = 0
-					}
-					state.pesPacketRemaining = remaining
-				} else {
-					state.pesPacketRemaining = -1
-				}
-			}
-
+			state.pesPacketRemaining = -2
 		}
 
-		if state.pesHeaderRemaining > 0 {
+		for state.pesHeaderRemaining > 0 && len(payload) > 0 {
 			headerTake := state.pesHeaderRemaining
 			if headerTake > len(payload) {
 				headerTake = len(payload)
@@ -277,17 +295,31 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 					state.pesHeaderBuf = append(state.pesHeaderBuf, payload[:take]...)
 				}
 			}
-			parseHeaderTimestamp()
-			if state.pesHeaderRemaining > len(payload) {
-				state.pesHeaderRemaining -= len(payload)
-				return
+			payload = payload[headerTake:]
+			state.pesHeaderRemaining -= headerTake
+
+			if !state.pesHeaderExtraKnown && len(state.pesHeaderBuf) >= 9 {
+				hdrLen := int(state.pesHeaderBuf[8])
+				state.pesPtsDtsFlags = (state.pesHeaderBuf[7] >> 6) & 0x03
+				state.pesHeaderRemaining += hdrLen
+				state.pesHeaderExtraKnown = true
+				if state.pesPacketRemaining == -2 && len(state.pesHeaderBuf) >= 6 {
+					pesLen := int(state.pesHeaderBuf[4])<<8 | int(state.pesHeaderBuf[5])
+					if pesLen > 0 {
+						remaining := pesLen - (3 + hdrLen)
+						if remaining < 0 {
+							remaining = 0
+						}
+						state.pesPacketRemaining = remaining
+					} else {
+						state.pesPacketRemaining = -1
+					}
+				}
 			}
-			payload = payload[state.pesHeaderRemaining:]
-			state.pesHeaderRemaining = 0
-			parseHeaderTimestamp()
-			if len(payload) == 0 {
-				return
-			}
+			parsePESHeaderTimestamp()
+		}
+		if len(payload) == 0 {
+			return
 		}
 		if !state.pesStarted {
 			return
@@ -324,14 +356,21 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	}
 
 	// flush remaining window bytes based on last video PTS
-	for pid, state := range states {
-		st := s.Streams[pid]
+	ptsLast := uint64(0)
+	ptsDiff := int64(0)
+	for pid, st := range s.Streams {
 		if st == nil || !st.Base().IsVideoStream() {
 			continue
 		}
-		if state.tsLast > 0 && state.lastDiff > 0 {
-			s.updateStreamBitrates(playlists, states, pid, state.tsLast, state.lastDiff)
+		state := states[pid]
+		if state == nil {
+			continue
 		}
+		if state.ptsLast > ptsLast {
+			ptsLast = state.ptsLast
+			ptsDiff = int64(ptsLast) - int64(state.dtsPrev)
+		}
+		s.updateStreamBitrates(playlists, states, pid, ptsLast, ptsDiff)
 	}
 
 	for pid, st := range s.Streams {
@@ -371,7 +410,7 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	return nil
 }
 
-func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, states map[uint16]*streamState, ptsPID uint16, pts uint64, ptsDiff uint64) {
+func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, states map[uint16]*streamState, ptsPID uint16, pts uint64, ptsDiff int64) {
 	if playlists == nil {
 		return
 	}
@@ -405,7 +444,7 @@ func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, states map[
 	}
 }
 
-func (s *StreamFile) updateStreamBitrate(playlists []*PlaylistFile, pid uint16, pts uint64, ptsDiff uint64, state *streamState) {
+func (s *StreamFile) updateStreamBitrate(playlists []*PlaylistFile, pid uint16, pts uint64, ptsDiff int64, state *streamState) {
 	if playlists == nil || state == nil {
 		return
 	}
@@ -486,4 +525,17 @@ func parsePTS(data []byte) uint64 {
 	pts |= uint64(data[3]) << 7
 	pts |= uint64(data[4]) >> 1
 	return pts
+}
+
+func validTimestamp(data []byte, prefix byte) bool {
+	if len(data) < 5 {
+		return false
+	}
+	if data[0]&0xF0 != prefix {
+		return false
+	}
+	if data[0]&0x01 != 0x01 || data[2]&0x01 != 0x01 || data[4]&0x01 != 0x01 {
+		return false
+	}
+	return true
 }
