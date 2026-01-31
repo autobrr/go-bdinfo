@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/blang/semver"
 	"github.com/creativeprojects/go-selfupdate"
@@ -37,6 +38,7 @@ type rootOptions struct {
 	summaryOnly      bool
 	stdout           bool
 	selfUpdate       bool
+	progress         bool
 }
 
 var opts rootOptions
@@ -91,6 +93,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&opts.summaryOnly, "summaryonly", "s", false, "Output only the quick summary block (likely what you want)")
 	rootCmd.Flags().BoolVar(&opts.selfUpdate, "self-update", false, "Update bdinfo to latest version (release builds only)")
 	rootCmd.Flags().BoolVar(&opts.selfUpdate, "update", false, "Update bdinfo to latest version (release builds only)")
+	rootCmd.Flags().BoolVar(&opts.progress, "progress", false, "Print scan progress to stderr")
 
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(versionCmd)
@@ -161,7 +164,7 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := runForPath(opts.path, s); err != nil {
+	if err := runForPath(opts.path, s, opts.progress); err != nil {
 		return err
 	}
 	if s.ReportFileName == "-" {
@@ -207,10 +210,10 @@ func runSelfUpdate(ctx context.Context) error {
 	return nil
 }
 
-func runForPath(path string, settings settings.Settings) error {
+func runForPath(path string, settings settings.Settings, progress bool) error {
 	lower := strings.ToLower(path)
 	if strings.HasSuffix(lower, ".iso") {
-		reportPath, err := scanAndReport(path, settings)
+		reportPath, err := scanAndReport(path, settings, progress)
 		if err != nil {
 			return err
 		}
@@ -270,7 +273,7 @@ func runForPath(path string, settings settings.Settings) error {
 				}
 				reports = append(reports, settings.ReportFileName)
 			}
-			reportPath, err := scanAndReport(target, settings)
+			reportPath, err := scanAndReport(target, settings, progress)
 			if err != nil {
 				return err
 			}
@@ -304,7 +307,7 @@ func runForPath(path string, settings settings.Settings) error {
 		return nil
 	}
 
-	reportPath, err := scanAndReport(path, settings)
+	reportPath, err := scanAndReport(path, settings, progress)
 	if err != nil {
 		return err
 	}
@@ -314,12 +317,18 @@ func runForPath(path string, settings settings.Settings) error {
 	return nil
 }
 
-func scanAndReport(path string, settings settings.Settings) (string, error) {
+func scanAndReport(path string, settings settings.Settings, progress bool) (string, error) {
 	rom, err := bdrom.New(path, settings)
 	if err != nil {
 		return "", err
 	}
 	defer rom.Close()
+
+	start := time.Now()
+	if progress {
+		fmt.Fprintf(os.Stderr, "Scanning: %s\n", path)
+		fmt.Fprintf(os.Stderr, "Found %d playlists, %d clip infos, %d streams\n", len(rom.PlaylistFiles), len(rom.StreamClipFiles), len(rom.StreamFiles))
+	}
 
 	result := rom.Scan()
 
@@ -338,6 +347,9 @@ func scanAndReport(path string, settings settings.Settings) (string, error) {
 	reportPath, err := report.WriteReport("", rom, playlists, result, settings)
 	if err != nil {
 		return "", err
+	}
+	if progress {
+		fmt.Fprintf(os.Stderr, "Scan complete in %s\n", time.Since(start).Round(time.Millisecond))
 	}
 	return reportPath, nil
 }
