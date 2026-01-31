@@ -397,7 +397,6 @@ func (p *PlaylistFile) Initialize() {
 			clipTimes[clip.Name] = []float64{clip.TimeIn}
 		}
 	}
-	p.ClearBitrates()
 	p.IsInitialized = true
 }
 
@@ -725,10 +724,12 @@ func compareAudioStreams(x, y *stream.AudioStream) int {
 	if sortY > sortX {
 		return 1
 	}
-	if x.LanguageCode() == "eng" {
+	xEng := x.LanguageCode() == "eng"
+	yEng := y.LanguageCode() == "eng"
+	if xEng && !yEng {
 		return -1
 	}
-	if y.LanguageCode() == "eng" {
+	if yEng && !xEng {
 		return 1
 	}
 	if x.LanguageCode() != y.LanguageCode() {
@@ -786,10 +787,12 @@ func compareGraphicsStreams(x, y *stream.GraphicsStream) int {
 	if sortY > sortX {
 		return 1
 	}
-	if x.LanguageCode() == "eng" {
+	xEng := x.LanguageCode() == "eng"
+	yEng := y.LanguageCode() == "eng"
+	if xEng && !yEng {
 		return -1
 	}
-	if y.LanguageCode() == "eng" {
+	if yEng && !xEng {
 		return 1
 	}
 	if x.LanguageCode() != y.LanguageCode() {
@@ -814,10 +817,12 @@ func compareTextStreams(x, y *stream.TextStream) int {
 	if y == nil {
 		return 1
 	}
-	if x.LanguageCode() == "eng" {
+	xEng := x.LanguageCode() == "eng"
+	yEng := y.LanguageCode() == "eng"
+	if xEng && !yEng {
 		return -1
 	}
-	if y.LanguageCode() == "eng" {
+	if yEng && !xEng {
 		return 1
 	}
 	if x.LanguageCode() != y.LanguageCode() {

@@ -74,7 +74,7 @@ func init() {
 	rootCmd.SetOut(os.Stdout)
 	rootCmd.SetErr(os.Stderr)
 
-	rootCmd.Flags().StringVarP(&opts.reportFile, "reportfilename", "o", "", "The report filename with extension")
+	rootCmd.Flags().StringVarP(&opts.reportFile, "reportfilename", "o", "", "The report filename with extension (use - for stdout)")
 	rootCmd.Flags().BoolVar(&opts.stdout, "stdout", false, "Write report to stdout")
 	rootCmd.Flags().BoolVarP(&opts.genDiag, "generatestreamdiagnostics", "g", false, "Generate the stream diagnostics section")
 	rootCmd.Flags().BoolVarP(&opts.extDiag, "extendedstreamdiagnostics", "e", false, "Enable extended video diagnostics (HEVC metadata)")
@@ -164,7 +164,11 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	if err := runForPath(opts.path, s); err != nil {
 		return err
 	}
-	fmt.Println("Scan complete.")
+	if s.ReportFileName == "-" {
+		fmt.Fprintln(os.Stderr, "Scan complete.")
+	} else {
+		fmt.Println("Scan complete.")
+	}
 	return nil
 }
 
@@ -246,7 +250,11 @@ func runForPath(path string, settings settings.Settings) error {
 	}
 
 	if len(bdmvDirs) > 1 || isIsoLevel {
+		stdout := settings.ReportFileName == "-"
 		oldReport := settings.ReportFileName
+		if stdout {
+			oldReport = ""
+		}
 		reports := []string{}
 		for _, sub := range bdmvDirs {
 			target := sub
@@ -314,13 +322,6 @@ func scanAndReport(path string, settings settings.Settings) (string, error) {
 	defer rom.Close()
 
 	result := rom.Scan()
-	fullResult := rom.ScanFull()
-	if fullResult.ScanError != nil {
-		result.ScanError = fullResult.ScanError
-	}
-	for name, err := range fullResult.FileErrors {
-		result.FileErrors[name] = err
-	}
 
 	playlists := make([]*bdrom.PlaylistFile, 0, len(rom.PlaylistFiles))
 	if len(rom.PlaylistOrder) > 0 {

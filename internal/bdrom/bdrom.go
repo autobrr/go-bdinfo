@@ -5,9 +5,14 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/s0up4200/go-bdinfo/internal/fs"
 	"github.com/s0up4200/go-bdinfo/internal/settings"
@@ -62,6 +67,126 @@ type BDROM struct {
 type ScanResult struct {
 	ScanError  error
 	FileErrors map[string]error
+}
+
+const maxScanWorkers = 8
+
+func scanWorkerLimit(total int) int {
+	limit := runtime.GOMAXPROCS(0)
+	if limit < 1 {
+		limit = 1
+	}
+	if override := os.Getenv("BDINFO_WORKERS"); override != "" {
+		if parsed, err := strconv.Atoi(override); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if limit > maxScanWorkers {
+		limit = maxScanWorkers
+	}
+	if total > 0 && limit > total {
+		limit = total
+	}
+	return limit
+}
+
+func runParallel[T any](items []T, limit int, fn func(T) error, onErr func(T, error)) {
+	if len(items) == 0 {
+		return
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > len(items) {
+		limit = len(items)
+	}
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for _, item := range items {
+		item := item
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := fn(item); err != nil && onErr != nil {
+				onErr(item, err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func orderedStreamClipFiles(files map[string]*StreamClipFile) []*StreamClipFile {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]*StreamClipFile, 0, len(files))
+	for _, clip := range files {
+		out = append(out, clip)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func orderedStreamFiles(files map[string]*StreamFile) []*StreamFile {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]*StreamFile, 0, len(files))
+	for _, file := range files {
+		out = append(out, file)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func orderedPlaylists(playlists map[string]*PlaylistFile, order []string) []*PlaylistFile {
+	if len(playlists) == 0 {
+		return nil
+	}
+	if len(order) == 0 {
+		out := make([]*PlaylistFile, 0, len(playlists))
+		for _, pl := range playlists {
+			out = append(out, pl)
+		}
+		sort.Slice(out, func(i, j int) bool {
+			return out[i].Name < out[j].Name
+		})
+		return out
+	}
+	out := make([]*PlaylistFile, 0, len(order))
+	for _, name := range order {
+		if pl, ok := playlists[name]; ok {
+			out = append(out, pl)
+		}
+	}
+	return out
+}
+
+func buildStreamPlaylistIndex(playlists []*PlaylistFile) map[*StreamFile][]*PlaylistFile {
+	index := make(map[*StreamFile][]*PlaylistFile)
+	for _, pl := range playlists {
+		if pl == nil {
+			continue
+		}
+		seen := make(map[*StreamFile]bool)
+		for _, clip := range pl.StreamClips {
+			if clip == nil || clip.StreamFile == nil {
+				continue
+			}
+			if seen[clip.StreamFile] {
+				continue
+			}
+			seen[clip.StreamFile] = true
+			index[clip.StreamFile] = append(index[clip.StreamFile], pl)
+		}
+	}
+	return index
 }
 
 func New(path string, settings settings.Settings) (*BDROM, error) {
@@ -258,12 +383,16 @@ func (b *BDROM) Close() {
 
 func (b *BDROM) Scan() ScanResult {
 	result := ScanResult{FileErrors: make(map[string]error)}
+	var errMu sync.Mutex
 
-	for _, clip := range b.StreamClipFiles {
-		if err := clip.Scan(); err != nil {
-			result.FileErrors[clip.Name] = err
-		}
-	}
+	clipFiles := orderedStreamClipFiles(b.StreamClipFiles)
+	runParallel(clipFiles, scanWorkerLimit(len(clipFiles)), func(clip *StreamClipFile) error {
+		return clip.Scan()
+	}, func(clip *StreamClipFile, err error) {
+		errMu.Lock()
+		result.FileErrors[clip.Name] = err
+		errMu.Unlock()
+	})
 
 	for _, streamFile := range b.StreamFiles {
 		ssifName := strings.ToUpper(strings.TrimSuffix(streamFile.Name, ".M2TS") + ".SSIF")
@@ -272,30 +401,32 @@ func (b *BDROM) Scan() ScanResult {
 		}
 	}
 
-	for _, playlist := range b.PlaylistFiles {
-		if err := playlist.Scan(b.StreamFiles, b.StreamClipFiles); err != nil {
-			result.FileErrors[playlist.Name] = err
-		}
-	}
+	playlists := orderedPlaylists(b.PlaylistFiles, b.PlaylistOrder)
+	runParallel(playlists, scanWorkerLimit(len(playlists)), func(playlist *PlaylistFile) error {
+		return playlist.Scan(b.StreamFiles, b.StreamClipFiles)
+	}, func(playlist *PlaylistFile, err error) {
+		errMu.Lock()
+		result.FileErrors[playlist.Name] = err
+		errMu.Unlock()
+	})
 
 	// scan stream files
-	for _, streamFile := range b.StreamFiles {
-		var playlists []*PlaylistFile
-		for _, playlist := range b.PlaylistFiles {
-			for _, clip := range playlist.StreamClips {
-				if clip.StreamFile == streamFile {
-					playlists = append(playlists, playlist)
-					break
-				}
-			}
-		}
-		if err := streamFile.Scan(playlists, false); err != nil {
-			result.FileErrors[streamFile.Name] = err
-		}
-	}
+	streamFiles := orderedStreamFiles(b.StreamFiles)
+	streamPlaylists := buildStreamPlaylistIndex(playlists)
+	runParallel(streamFiles, scanWorkerLimit(len(streamFiles)), func(streamFile *StreamFile) error {
+		return streamFile.Scan(streamPlaylists[streamFile], false)
+	}, func(streamFile *StreamFile, err error) {
+		errMu.Lock()
+		result.FileErrors[streamFile.Name] = err
+		errMu.Unlock()
+	})
 
-	for _, playlist := range b.PlaylistFiles {
+	runParallel(playlists, scanWorkerLimit(len(playlists)), func(playlist *PlaylistFile) error {
 		playlist.Initialize()
+		return nil
+	}, nil)
+
+	for _, playlist := range playlists {
 		if b.Is50Hz {
 			continue
 		}
@@ -325,25 +456,23 @@ func (b *BDROM) Scan() ScanResult {
 // ScanFull performs a full bitrate/diagnostics scan over stream files.
 func (b *BDROM) ScanFull() ScanResult {
 	result := ScanResult{FileErrors: make(map[string]error)}
+	var errMu sync.Mutex
 
-	for _, playlist := range b.PlaylistFiles {
+	playlists := orderedPlaylists(b.PlaylistFiles, b.PlaylistOrder)
+	runParallel(playlists, scanWorkerLimit(len(playlists)), func(playlist *PlaylistFile) error {
 		playlist.ClearBitrates()
-	}
+		return nil
+	}, nil)
 
-	for _, streamFile := range b.StreamFiles {
-		var playlists []*PlaylistFile
-		for _, playlist := range b.PlaylistFiles {
-			for _, clip := range playlist.StreamClips {
-				if clip.StreamFile == streamFile {
-					playlists = append(playlists, playlist)
-					break
-				}
-			}
-		}
-		if err := streamFile.Scan(playlists, true); err != nil {
-			result.FileErrors[streamFile.Name] = err
-		}
-	}
+	streamFiles := orderedStreamFiles(b.StreamFiles)
+	streamPlaylists := buildStreamPlaylistIndex(playlists)
+	runParallel(streamFiles, scanWorkerLimit(len(streamFiles)), func(streamFile *StreamFile) error {
+		return streamFile.Scan(streamPlaylists[streamFile], true)
+	}, func(streamFile *StreamFile, err error) {
+		errMu.Lock()
+		result.FileErrors[streamFile.Name] = err
+		errMu.Unlock()
+	})
 
 	return result
 }

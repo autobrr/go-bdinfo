@@ -32,13 +32,11 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 		reportName = path
 	}
 
-	if reportName == "-" {
-		return reportName, nil
-	}
-
-	if _, err := os.Stat(reportName); err == nil {
-		backup := fmt.Sprintf("%s.%d", reportName, time.Now().Unix())
-		_ = os.Rename(reportName, backup)
+	if reportName != "-" {
+		if _, err := os.Stat(reportName); err == nil {
+			backup := fmt.Sprintf("%s.%d", reportName, time.Now().Unix())
+			_ = os.Rename(reportName, backup)
+		}
 	}
 
 	var b strings.Builder
