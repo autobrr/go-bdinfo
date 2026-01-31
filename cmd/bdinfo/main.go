@@ -96,7 +96,7 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Fprintf(os.Stderr, "bdinfo: %s\n", err.Error())
 		os.Exit(1)
 	}
 }
@@ -153,7 +153,11 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		s.SummaryOnly = opts.summaryOnly
 	}
 
-	return runForPath(opts.path, s)
+	if err := runForPath(opts.path, s); err != nil {
+		return err
+	}
+	fmt.Println("Scan complete.")
+	return nil
 }
 
 func runSelfUpdate(ctx context.Context) error {
@@ -194,7 +198,12 @@ func runSelfUpdate(ctx context.Context) error {
 func runForPath(path string, settings settings.Settings) error {
 	lower := strings.ToLower(path)
 	if strings.HasSuffix(lower, ".iso") {
-		return scanAndReport(path, settings)
+		reportPath, err := scanAndReport(path, settings)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Report written: %s\n", reportPath)
+		return nil
 	}
 
 	bdmvDirs := []string{}
@@ -243,13 +252,18 @@ func runForPath(path string, settings settings.Settings) error {
 				}
 				reports = append(reports, settings.ReportFileName)
 			}
-			if err := scanAndReport(target, settings); err != nil {
+			reportPath, err := scanAndReport(target, settings)
+			if err != nil {
 				return err
+			}
+			if oldReport == "" {
+				fmt.Printf("Report written: %s\n", reportPath)
 			}
 		}
 		if oldReport != "" && len(reports) > 0 {
 			if len(reports) == 1 {
 				_ = os.Rename(reports[0], oldReport)
+				fmt.Printf("Report written: %s\n", oldReport)
 				return nil
 			}
 			combined, err := os.Create(oldReport)
@@ -266,18 +280,24 @@ func runForPath(path string, settings settings.Settings) error {
 				combined.WriteString("\n\n\n\n\n")
 				_ = os.Remove(reportFile)
 			}
+			fmt.Printf("Report written: %s\n", oldReport)
 			return nil
 		}
 		return nil
 	}
 
-	return scanAndReport(path, settings)
-}
-
-func scanAndReport(path string, settings settings.Settings) error {
-	rom, err := bdrom.New(path, settings)
+	reportPath, err := scanAndReport(path, settings)
 	if err != nil {
 		return err
+	}
+	fmt.Printf("Report written: %s\n", reportPath)
+	return nil
+}
+
+func scanAndReport(path string, settings settings.Settings) (string, error) {
+	rom, err := bdrom.New(path, settings)
+	if err != nil {
+		return "", err
 	}
 	defer rom.Close()
 
@@ -302,6 +322,9 @@ func scanAndReport(path string, settings settings.Settings) error {
 			playlists = append(playlists, pl)
 		}
 	}
-	_, err = report.WriteReport("", rom, playlists, result, settings)
-	return err
+	reportPath, err := report.WriteReport("", rom, playlists, result, settings)
+	if err != nil {
+		return "", err
+	}
+	return reportPath, nil
 }
