@@ -47,7 +47,7 @@ Report default: `BDInfo_{0}.bdinfo` (disc label substituted).
 
 ## Options
 
-- `-o, --reportfilename`
+- `-o, --reportfilename` (use `-` for stdout)
 - `--stdout` (write report to stdout)
 - `--main` (only main playlist; likely what you want)
 - `-f, --forumsonly` (only forums paste block)
