@@ -270,21 +270,16 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 			return
 		}
 		if payloadStart {
-			state.pesHeaderRemaining = 0
-			state.pesHeaderExtraKnown = false
-			state.pesPacketRemaining = -2
-			state.pesHeaderBuf = nil
-			state.pesHeaderParsed = false
-			state.pesPtsDtsFlags = 0
-			state.pesStarted = false
-		}
-		if payloadStart {
 			state.pesStarted = true
 			state.pesHeaderRemaining = 9
 			state.pesHeaderExtraKnown = false
 			state.pesHeaderParsed = false
 			state.pesPtsDtsFlags = 0
-			state.pesHeaderBuf = make([]byte, 0, 19)
+			if state.pesHeaderBuf == nil {
+				state.pesHeaderBuf = make([]byte, 0, 19)
+			} else {
+				state.pesHeaderBuf = state.pesHeaderBuf[:0]
+			}
 			state.pesPacketRemaining = -2
 		}
 
@@ -354,13 +349,22 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	}
 
 	processPacket(first[:packetSize])
-	buf := make([]byte, packetSize)
+	buf := make([]byte, packetSize*256)
 	for {
-		_, err := io.ReadFull(reader, buf)
+		n, err := io.ReadFull(reader, buf)
+		if err != nil {
+			if err == io.ErrUnexpectedEOF {
+				n -= n % packetSize
+			} else {
+				break
+			}
+		}
+		for i := 0; i+packetSize <= n; i += packetSize {
+			processPacket(buf[i : i+packetSize])
+		}
 		if err != nil {
 			break
 		}
-		processPacket(buf[:packetSize])
 	}
 
 	// flush remaining window bytes based on last video PTS
