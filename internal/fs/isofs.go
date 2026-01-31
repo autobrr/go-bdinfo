@@ -18,7 +18,7 @@ type ISOFileSystemImpl struct {
 	mounted     bool
 	udfReader   *udf.Reader
 	// Cache for directory lookups
-	dirCache    map[string]*udf.Directory
+	dirCache map[string]*udf.Directory
 }
 
 // NewISOFileSystem creates a new ISO file system reader.
@@ -33,18 +33,18 @@ func (fs *ISOFileSystemImpl) Mount(isoPath string) error {
 	if fs.mounted {
 		return fmt.Errorf("ISO already mounted")
 	}
-	
+
 	// Open UDF reader
 	reader, err := udf.NewReader(isoPath)
 	if err != nil {
 		return fmt.Errorf("failed to open UDF volume: %w", err)
 	}
-	
+
 	fs.udfReader = reader
 	fs.isoPath = isoPath
 	fs.volumeLabel = reader.GetVolumeLabel()
 	fs.mounted = true
-	
+
 	return nil
 }
 
@@ -53,7 +53,7 @@ func (fs *ISOFileSystemImpl) Unmount() error {
 	if !fs.mounted {
 		return nil
 	}
-	
+
 	if fs.udfReader != nil {
 		if err := fs.udfReader.Close(); err != nil {
 			return err
@@ -75,10 +75,10 @@ func (fs *ISOFileSystemImpl) GetDirectoryInfo(path string) (DirectoryInfo, error
 	if !fs.mounted {
 		return nil, fmt.Errorf("ISO not mounted")
 	}
-	
+
 	// Normalize path
 	path = fs.normalizePath(path)
-	
+
 	// Check cache
 	if dir, exists := fs.dirCache[path]; exists {
 		return &isoDirectoryInfo{
@@ -88,16 +88,16 @@ func (fs *ISOFileSystemImpl) GetDirectoryInfo(path string) (DirectoryInfo, error
 			dir:      dir,
 		}, nil
 	}
-	
+
 	// Read from UDF
 	dir, err := fs.udfReader.ReadDirectory(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read directory: %w", err)
 	}
-	
+
 	// Cache it
 	fs.dirCache[path] = dir
-	
+
 	return &isoDirectoryInfo{
 		name:     filepath.Base(path),
 		fullPath: path,
@@ -111,16 +111,16 @@ func (fs *ISOFileSystemImpl) GetFileInfo(path string) (FileInfo, error) {
 	if !fs.mounted {
 		return nil, fmt.Errorf("ISO not mounted")
 	}
-	
+
 	// Normalize path
 	path = fs.normalizePath(path)
-	
+
 	// Find file in UDF
 	file, err := fs.udfReader.FindFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find file: %w", err)
 	}
-	
+
 	return &isoFileInfo{
 		name:     filepath.Base(path),
 		fullPath: path,
@@ -139,15 +139,15 @@ func (fs *ISOFileSystemImpl) normalizePath(p string) string {
 	// Remove any leading slash variations
 	p = strings.TrimPrefix(p, "./")
 	p = strings.TrimPrefix(p, "/")
-	
+
 	// Ensure paths use forward slashes
 	p = filepath.ToSlash(p)
-	
+
 	// Root is "/"
 	if p == "" {
 		return "/"
 	}
-	
+
 	return "/" + p
 }
 
@@ -219,12 +219,12 @@ func (d *isoDirectoryInfo) GetFiles() ([]FileInfo, error) {
 	if d.dir == nil {
 		return nil, fmt.Errorf("directory not initialized")
 	}
-	
+
 	udfFiles, err := d.dir.GetFiles()
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var files []FileInfo
 	for _, udfFile := range udfFiles {
 		files = append(files, &isoFileInfo{
@@ -234,7 +234,7 @@ func (d *isoDirectoryInfo) GetFiles() ([]FileInfo, error) {
 			file:     udfFile,
 		})
 	}
-	
+
 	return files, nil
 }
 
@@ -242,17 +242,17 @@ func (d *isoDirectoryInfo) GetDirectories() ([]DirectoryInfo, error) {
 	if d.dir == nil {
 		return nil, fmt.Errorf("directory not initialized")
 	}
-	
+
 	udfDirs, err := d.dir.GetDirectories()
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var dirs []DirectoryInfo
 	for _, udfDir := range udfDirs {
 		dirPath := path.Join(d.fullPath, udfDir.Name)
 		d.fs.dirCache[dirPath] = udfDir
-		
+
 		dirs = append(dirs, &isoDirectoryInfo{
 			name:     udfDir.Name,
 			fullPath: dirPath,
@@ -260,7 +260,7 @@ func (d *isoDirectoryInfo) GetDirectories() ([]DirectoryInfo, error) {
 			dir:      udfDir,
 		})
 	}
-	
+
 	return dirs, nil
 }
 
@@ -269,7 +269,7 @@ func (d *isoDirectoryInfo) GetFilesPattern(pattern string) ([]FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var matches []FileInfo
 	for _, file := range files {
 		matched, err := filepath.Match(pattern, file.Name())
@@ -280,7 +280,7 @@ func (d *isoDirectoryInfo) GetFilesPattern(pattern string) ([]FileInfo, error) {
 			matches = append(matches, file)
 		}
 	}
-	
+
 	return matches, nil
 }
 
@@ -289,13 +289,13 @@ func (d *isoDirectoryInfo) GetDirectory(name string) (DirectoryInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	for _, dir := range dirs {
 		if strings.EqualFold(dir.Name(), name) {
 			return dir, nil
 		}
 	}
-	
+
 	return nil, fmt.Errorf("directory not found: %s", name)
 }
 
@@ -304,13 +304,13 @@ func (d *isoDirectoryInfo) GetFile(name string) (FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	for _, file := range files {
 		if strings.EqualFold(file.Name(), name) {
 			return file, nil
 		}
 	}
-	
+
 	return nil, fmt.Errorf("file not found: %s", name)
 }
 

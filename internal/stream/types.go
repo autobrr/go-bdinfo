@@ -13,20 +13,20 @@ const (
 	StreamTypeVC1Video              StreamType = 0xea
 	StreamTypeMPEG1Audio            StreamType = 0x03
 	StreamTypeMPEG2Audio            StreamType = 0x04
-	StreamTypeMPEG2AACAudio          StreamType = 0x0f
-	StreamTypeMPEG4AACAudio          StreamType = 0x11
+	StreamTypeMPEG2AACAudio         StreamType = 0x0f
+	StreamTypeMPEG4AACAudio         StreamType = 0x11
 	StreamTypeLPCMAudio             StreamType = 0x80
 	StreamTypeAC3Audio              StreamType = 0x81
-	StreamTypeAC3PlusAudio           StreamType = 0x84
-	StreamTypeAC3PlusSecondaryAudio  StreamType = 0xa1
-	StreamTypeAC3TrueHDAudio         StreamType = 0x83
+	StreamTypeAC3PlusAudio          StreamType = 0x84
+	StreamTypeAC3PlusSecondaryAudio StreamType = 0xa1
+	StreamTypeAC3TrueHDAudio        StreamType = 0x83
 	StreamTypeDTSAudio              StreamType = 0x82
-	StreamTypeDTSHDAudio             StreamType = 0x85
-	StreamTypeDTSHDSecondaryAudio    StreamType = 0xa2
-	StreamTypeDTSHDMasterAudio       StreamType = 0x86
-	StreamTypePresentationGraphics   StreamType = 0x90
-	StreamTypeInteractiveGraphics    StreamType = 0x91
-	StreamTypeSubtitle               StreamType = 0x92
+	StreamTypeDTSHDAudio            StreamType = 0x85
+	StreamTypeDTSHDSecondaryAudio   StreamType = 0xa2
+	StreamTypeDTSHDMasterAudio      StreamType = 0x86
+	StreamTypePresentationGraphics  StreamType = 0x90
+	StreamTypeInteractiveGraphics   StreamType = 0x91
+	StreamTypeSubtitle              StreamType = 0x92
 )
 
 type VideoFormat uint8
@@ -68,12 +68,12 @@ const (
 type SampleRate uint8
 
 const (
-	SampleRateUnknown  SampleRate = 0
-	SampleRate48       SampleRate = 1
-	SampleRate96       SampleRate = 4
-	SampleRate192      SampleRate = 5
-	SampleRate48192    SampleRate = 12
-	SampleRate4896     SampleRate = 14
+	SampleRateUnknown SampleRate = 0
+	SampleRate48      SampleRate = 1
+	SampleRate96      SampleRate = 4
+	SampleRate192     SampleRate = 5
+	SampleRate48192   SampleRate = 12
+	SampleRate4896    SampleRate = 14
 )
 
 type AspectRatio uint8

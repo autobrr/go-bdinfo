@@ -55,7 +55,7 @@ func (r *Reader) GetVolumeLabel() string {
 
 // initialize reads UDF structures and prepares for file access
 func (r *Reader) initialize() error {
-	
+
 	// Verify UDF volume
 	if err := r.verifyVolume(); err != nil {
 		return fmt.Errorf("not a valid UDF volume: %w", err)
@@ -73,25 +73,25 @@ func (r *Reader) initialize() error {
 	}
 
 	// Now read the file set descriptor after we have partition info
-	
+
 	if r.fileSetLocation > 0 {
 		location := r.partitionStart + r.fileSetLocation
-		
+
 		if _, err := r.file.Seek(int64(location)*int64(r.blockSize), io.SeekStart); err != nil {
 			return fmt.Errorf("failed to seek to file set descriptor: %w", err)
 		}
-		
+
 		var fsd FileSetDescriptor
 		if err := r.readDescriptor(&fsd); err != nil {
 			return fmt.Errorf("failed to read file set descriptor: %w", err)
 		}
-		
+
 		// Check tag
 		if fsd.DescriptorTag.TagIdentifier != TagFileSet {
-			return fmt.Errorf("invalid file set descriptor tag: %d (expected %d) at location %d (partition start: %d, fileSetLocation: %d)", 
+			return fmt.Errorf("invalid file set descriptor tag: %d (expected %d) at location %d (partition start: %d, fileSetLocation: %d)",
 				fsd.DescriptorTag.TagIdentifier, TagFileSet, location, r.partitionStart, r.fileSetLocation)
 		}
-		
+
 		r.fileSetDesc = &fsd
 		r.rootICB = fsd.RootDirectoryICB
 	} else {
@@ -111,7 +111,7 @@ func (r *Reader) verifyVolume() error {
 	foundNSR := false
 	foundTerminator := false
 	descriptors := []string{} // Track what we find for debugging
-	
+
 	for i := 0; i < 16 && !foundTerminator; i++ { // Check up to 16 sectors
 		var vrs VolumeRecognitionDescriptor
 		if err := binary.Read(r.file, binary.LittleEndian, &vrs); err != nil {
@@ -124,7 +124,7 @@ func (r *Reader) verifyVolume() error {
 
 		identifier := strings.TrimRight(string(vrs.StandardIdentifier[:]), "\x00")
 		descriptors = append(descriptors, fmt.Sprintf("Sector %d: '%s' (raw: %x)", 16+i, identifier, vrs.StandardIdentifier))
-		
+
 		switch identifier {
 		case StandardIDBEA01:
 			// Beginning Extended Area
@@ -206,11 +206,10 @@ func (r *Reader) readVolumeDescriptorSequence(extent ExtentAD) error {
 	for bytesRead < extent.Length {
 		var tag Tag
 		tagPos := r.getCurrentPosition()
-		
+
 		if err := binary.Read(r.file, binary.LittleEndian, &tag); err != nil {
 			return err
 		}
-		
 
 		// Seek back to read full descriptor
 		r.file.Seek(tagPos, io.SeekStart)
@@ -240,8 +239,7 @@ func (r *Reader) readVolumeDescriptorSequence(extent ExtentAD) error {
 			// The first 8 bytes contain the file set descriptor location as ExtentAD
 			_ = binary.LittleEndian.Uint32(lvd.LogicalVolumeContentsUse[0:4]) // fileSetLength
 			fileSetLocation := binary.LittleEndian.Uint32(lvd.LogicalVolumeContentsUse[4:8])
-			
-			
+
 			// Debug: check if LogicalVolumeContentsUse has data
 			hasData := false
 			for _, b := range lvd.LogicalVolumeContentsUse {
@@ -250,15 +248,15 @@ func (r *Reader) readVolumeDescriptorSequence(extent ExtentAD) error {
 					break
 				}
 			}
-			
+
 			if !hasData || fileSetLocation == 0 {
 				// LogicalVolumeContentsUse is empty or zero
 				// Try common fallback locations for FileSet descriptor
 				// Most Blu-ray discs put it at sector 32 of the partition
 				fileSetLocation = 32
 			}
-			
-			// We need to defer reading the file set descriptor until after we've processed 
+
+			// We need to defer reading the file set descriptor until after we've processed
 			// all volume descriptors (especially the partition descriptor)
 			// For now, just store the location
 			r.fileSetLocation = fileSetLocation
@@ -320,36 +318,36 @@ type VolumeRecognitionDescriptor struct {
 
 // Anchor Volume Descriptor Pointer
 type AnchorVolumeDescriptorPointer struct {
-	DescriptorTag                      Tag
-	MainVolumeDescriptorSequenceExtent ExtentAD
+	DescriptorTag                         Tag
+	MainVolumeDescriptorSequenceExtent    ExtentAD
 	ReserveVolumeDescriptorSequenceExtent ExtentAD
-	Reserved                           [480]byte
+	Reserved                              [480]byte
 }
 
 // Primary Volume Descriptor
 type PrimaryVolumeDescriptor struct {
-	DescriptorTag                   Tag
-	VolumeDescriptorSequenceNumber  uint32
-	PrimaryVolumeDescriptorNumber   uint32
-	VolumeIdentifier                [32]byte
-	VolumeSequenceNumber            uint16
-	MaximumVolumeSequenceNumber     uint16
-	InterchangeLevel                uint16
-	MaximumInterchangeLevel         uint16
-	CharacterSetList                uint32
-	MaximumCharacterSetList         uint32
-	VolumeSetIdentifier             [128]byte
-	DescriptorCharacterSet          CharSpec
-	ExplanatoryCharacterSet         CharSpec
-	VolumeAbstract                  ExtentAD
-	VolumeCopyrightNotice           ExtentAD
-	ApplicationIdentifier           EntityID
-	RecordingDateAndTime            Timestamp
-	ImplementationIdentifier        EntityID
-	ImplementationUse               [64]byte
+	DescriptorTag                               Tag
+	VolumeDescriptorSequenceNumber              uint32
+	PrimaryVolumeDescriptorNumber               uint32
+	VolumeIdentifier                            [32]byte
+	VolumeSequenceNumber                        uint16
+	MaximumVolumeSequenceNumber                 uint16
+	InterchangeLevel                            uint16
+	MaximumInterchangeLevel                     uint16
+	CharacterSetList                            uint32
+	MaximumCharacterSetList                     uint32
+	VolumeSetIdentifier                         [128]byte
+	DescriptorCharacterSet                      CharSpec
+	ExplanatoryCharacterSet                     CharSpec
+	VolumeAbstract                              ExtentAD
+	VolumeCopyrightNotice                       ExtentAD
+	ApplicationIdentifier                       EntityID
+	RecordingDateAndTime                        Timestamp
+	ImplementationIdentifier                    EntityID
+	ImplementationUse                           [64]byte
 	PredecessorVolumeDescriptorSequenceLocation uint32
-	Flags                           uint16
-	Reserved                        [22]byte
+	Flags                                       uint16
+	Reserved                                    [22]byte
 }
 
 // Partition Descriptor
@@ -387,23 +385,23 @@ type LogicalVolumeDescriptor struct {
 
 // File Set Descriptor
 type FileSetDescriptor struct {
-	DescriptorTag                 Tag
-	RecordingDateAndTime          Timestamp
-	InterchangeLevel              uint16
-	MaximumInterchangeLevel       uint16
-	CharacterSetList              uint32
-	MaximumCharacterSetList       uint32
-	FileSetNumber                 uint32
-	FileSetDescriptorNumber       uint32
+	DescriptorTag                       Tag
+	RecordingDateAndTime                Timestamp
+	InterchangeLevel                    uint16
+	MaximumInterchangeLevel             uint16
+	CharacterSetList                    uint32
+	MaximumCharacterSetList             uint32
+	FileSetNumber                       uint32
+	FileSetDescriptorNumber             uint32
 	LogicalVolumeIdentifierCharacterSet CharSpec
-	LogicalVolumeIdentifier       [128]byte
-	FileSetCharacterSet           CharSpec
-	FileSetIdentifier             [32]byte
-	CopyrightFileIdentifier       [32]byte
-	AbstractFileIdentifier        [32]byte
-	RootDirectoryICB              LongAD
-	DomainIdentifier              EntityID
-	NextExtent                    LongAD
-	SystemStreamDirectoryICB      LongAD
-	Reserved                      [32]byte
+	LogicalVolumeIdentifier             [128]byte
+	FileSetCharacterSet                 CharSpec
+	FileSetIdentifier                   [32]byte
+	CopyrightFileIdentifier             [32]byte
+	AbstractFileIdentifier              [32]byte
+	RootDirectoryICB                    LongAD
+	DomainIdentifier                    EntityID
+	NextExtent                          LongAD
+	SystemStreamDirectoryICB            LongAD
+	Reserved                            [32]byte
 }

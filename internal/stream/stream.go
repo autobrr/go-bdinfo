@@ -9,18 +9,18 @@ import (
 
 // Stream is the base transport stream entry.
 type Stream struct {
-	PID        uint16
-	StreamType StreamType
-	Descriptors []Descriptor
-	BitRate    int64
+	PID           uint16
+	StreamType    StreamType
+	Descriptors   []Descriptor
+	BitRate       int64
 	ActiveBitRate int64
-	IsVBR      bool
+	IsVBR         bool
 	IsInitialized bool
 	LanguageName  string
 	IsHidden      bool
 
-	PayloadBytes uint64
-	PacketCount  uint64
+	PayloadBytes  uint64
+	PacketCount   uint64
 	PacketSeconds float64
 	AngleIndex    int
 
@@ -375,17 +375,17 @@ func (s *Stream) Clone() Info {
 type VideoStream struct {
 	Stream
 
-	Width  int
-	Height int
-	IsInterlaced bool
-	FrameRateEnum int
-	FrameRateDen  int
-	AspectRatio   AspectRatio
+	Width           int
+	Height          int
+	IsInterlaced    bool
+	FrameRateEnum   int
+	FrameRateDen    int
+	AspectRatio     AspectRatio
 	EncodingProfile string
-	ExtendedData any
+	ExtendedData    any
 
 	videoFormat VideoFormat
-	frameRate FrameRate
+	frameRate   FrameRate
 }
 
 func (v *VideoStream) VideoFormat() VideoFormat {
@@ -526,15 +526,15 @@ const (
 type AudioStream struct {
 	Stream
 
-	SampleRate int
-	ChannelCount int
-	BitDepth int
-	LFE int
-	DialNorm int
+	SampleRate    int
+	ChannelCount  int
+	BitDepth      int
+	LFE           int
+	DialNorm      int
 	HasExtensions bool
-	ExtendedData any
-	AudioMode AudioMode
-	CoreStream *AudioStream
+	ExtendedData  any
+	AudioMode     AudioMode
+	CoreStream    *AudioStream
 	ChannelLayout ChannelLayout
 }
 
@@ -649,17 +649,17 @@ func (a *AudioStream) Clone() Info {
 // GraphicsStream for PGS/IGS.
 type GraphicsStream struct {
 	Stream
-	Width int
-	Height int
-	Captions int
+	Width          int
+	Height         int
+	Captions       int
 	ForcedCaptions int
-	CaptionIDs map[int]any
-	LastFrame any
+	CaptionIDs     map[int]any
+	LastFrame      any
 }
 
 func NewGraphicsStream() *GraphicsStream {
 	return &GraphicsStream{
-		Stream: Stream{IsVBR: true, IsInitialized: false},
+		Stream:     Stream{IsVBR: true, IsInitialized: false},
 		CaptionIDs: make(map[int]any),
 	}
 }
