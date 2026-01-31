@@ -39,6 +39,15 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 		}
 	}
 
+	if settings.SummaryOnly {
+		output := buildSummaryOnly(bd, playlists, settings)
+		if reportName == "-" {
+			_, err := os.Stdout.WriteString(output)
+			return reportName, err
+		}
+		return reportName, os.WriteFile(reportName, []byte(output), 0o644)
+	}
+
 	var b strings.Builder
 	protection := "AACS"
 	if bd.IsBDPlus {
@@ -517,6 +526,100 @@ func extractQuickSummary(report string) string {
 		return report
 	}
 	return out + "\n"
+}
+
+func buildSummaryOnly(bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, settings settings.Settings) string {
+	if settings.MainPlaylistOnly {
+		playlists = selectMainPlaylist(playlists, settings)
+	}
+
+	sort.SliceStable(playlists, func(i, j int) bool {
+		return playlists[i].FileSize() > playlists[j].FileSize()
+	})
+
+	protection := "AACS"
+	if bd.IsBDPlus {
+		protection = "BD+"
+	} else if bd.IsUHD {
+		protection = "AACS2"
+	}
+
+	var out strings.Builder
+	for _, playlist := range playlists {
+		if settings.FilterLoopingPlaylists && !playlist.IsValid() {
+			continue
+		}
+		var summary strings.Builder
+
+		playlistLength := playlist.TotalLength()
+		totalLength := util.FormatTime(playlistLength, true)
+
+		totalSize := playlist.TotalSize()
+		totalSizeStr := util.FormatNumber(int64(totalSize))
+		totalBitrate := formatMbps(playlist.TotalBitRate())
+
+		if len(playlist.VideoStreams) > 0 {
+			for _, st := range playlist.SortedStreams {
+				if !st.Base().IsVideoStream() {
+					continue
+				}
+				name := stream.CodecNameForInfo(st)
+				if st.Base().AngleIndex > 0 {
+					name = fmt.Sprintf("%s (%d)", name, st.Base().AngleIndex)
+				}
+				bitrate := fmt.Sprintf("%d", int(math.RoundToEven(float64(st.Base().BitRate)/1000)))
+				if st.Base().AngleIndex > 0 {
+					bitrate = fmt.Sprintf("%s (%d)", bitrate, int(math.RoundToEven(float64(st.Base().ActiveBitRate)/1000)))
+				}
+				bitrate = fmt.Sprintf("%s kbps", bitrate)
+				if settings.GenerateTextSummary {
+					fmt.Fprintf(&summary, "%sVideo: %s / %s / %s\n", hiddenPrefix(st), name, bitrate, st.Description())
+				}
+			}
+		}
+
+		if len(playlist.AudioStreams) > 0 {
+			for _, st := range playlist.SortedStreams {
+				if !st.Base().IsAudioStream() {
+					continue
+				}
+				if settings.GenerateTextSummary {
+					fmt.Fprintf(&summary, "%sAudio: %s / %s / %s\n", hiddenPrefix(st), st.Base().LanguageName, stream.CodecNameForInfo(st), st.Description())
+				}
+			}
+		}
+
+		if len(playlist.GraphicsStreams) > 0 {
+			for _, st := range playlist.SortedStreams {
+				if !st.Base().IsGraphicsStream() {
+					continue
+				}
+				if settings.GenerateTextSummary {
+					bitrate := fmt.Sprintf("%.3f kbps", float64(st.Base().BitRate)/1000.0)
+					fmt.Fprintf(&summary, "%sSubtitle: %s / %s\n", hiddenPrefix(st), st.Base().LanguageName, bitrate)
+				}
+			}
+		}
+
+		if settings.GenerateTextSummary {
+			out.WriteString("QUICK SUMMARY:\n\n\n")
+			if bd.DiscTitle != "" {
+				fmt.Fprintf(&out, "Disc Title: %s\n", bd.DiscTitle)
+			}
+			fmt.Fprintf(&out, "Disc Label: %s\n", bd.VolumeLabel)
+			fmt.Fprintf(&out, "Disc Size: %s bytes\n", util.FormatNumber(int64(bd.Size)))
+			fmt.Fprintf(&out, "Protection: %s\n", protection)
+			fmt.Fprintf(&out, "Playlist: %s\n", playlist.Name)
+			fmt.Fprintf(&out, "Size: %s bytes\n", totalSizeStr)
+			fmt.Fprintf(&out, "Length: %s\n", totalLength)
+			fmt.Fprintf(&out, "Total Bitrate: %s Mbps\n", totalBitrate)
+			if summary.Len() > 0 {
+				out.WriteString(summary.String())
+			}
+			out.WriteString("\n\n\n\n\n")
+		}
+	}
+	return out.String()
 }
 
 func formatMbps(bitrate uint64) string {
