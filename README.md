@@ -32,4 +32,6 @@ Report default: `BDInfo_{0}.bdinfo` (disc label substituted).
 
 - Tag a release like `vX.Y.Z`.
 - GitHub Actions runs GoReleaser.
-- Homebrew cask publishes to `s0up4200/homebrew-bdinfo` and requires `HOMEBREW_TAP_GITHUB_TOKEN`.
+- Homebrew cask publishes to this repo under `Casks/`.
+- No extra token needed as long as Homebrew stays in this repo.
+- Install: `brew tap s0up4200/go-bdinfo` then `brew install --cask bdinfo`.

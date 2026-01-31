@@ -57,5 +57,4 @@ homebrew_casks:
     description: "Go rewrite of BDInfo."
     repository:
       owner: s0up4200
-      name: "homebrew-{{ .ProjectName }}"
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      name: "{{ .ProjectName }}"
