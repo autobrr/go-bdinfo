@@ -63,8 +63,6 @@ changelog:
       - Merge remote-tracking branch
       - Merge branch
       - go mod tidy
-      - "^Brew cask update"
-      - "goreleaserbot"
   groups:
     - title: "New Features"
       regexp: "^.*feat[(\\w)]*:+.*$"
