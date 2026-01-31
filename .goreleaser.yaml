@@ -1,0 +1,61 @@
+version: 2
+
+project_name: bdinfo
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: bdinfo
+    main: ./cmd/bdinfo
+    binary: bdinfo
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    builds:
+      - bdinfo
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "^build:"
+      - "^refactor:"
+
+homebrew_casks:
+  - name: bdinfo
+    binaries:
+      - bdinfo
+    homepage: "https://github.com/autobrr/go-bdinfo"
+    description: "Go rewrite of BDInfo."
+    repository:
+      owner: autobrr
+      name: "homebrew-{{ .ProjectName }}"
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
