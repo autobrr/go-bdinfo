@@ -72,7 +72,7 @@ type ScanResult struct {
 const maxScanWorkers = 8
 
 func scanWorkerLimit(total int) int {
-	limit := runtime.GOMAXPROCS(0)
+	limit := 2
 	if limit < 1 {
 		limit = 1
 	}

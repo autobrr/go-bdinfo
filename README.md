@@ -63,6 +63,7 @@ Report default: `BDInfo_{0}.bdinfo` (disc label substituted).
 - `-g, --generatestreamdiagnostics`
 - `-e, --extendedstreamdiagnostics` (extended HEVC video diagnostics)
 - `--self-update` (update to latest release; release builds only)
+- `BDINFO_WORKERS` env var overrides scan worker count (default: 2)
 
 ## Commands
 
