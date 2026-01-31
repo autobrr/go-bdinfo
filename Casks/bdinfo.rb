@@ -14,22 +14,22 @@ cask "bdinfo" do
   on_macos do
     on_intel do
       url "https://github.com/s0up4200/go-bdinfo/releases/download/v#{version}/bdinfo_#{version}_darwin_amd64.tar.gz"
-      sha256 "809ee4949eac3042a921079e278504dfea7f0d5173268ff187afd313f241e46f"
+      sha256 "eec435ef7b3c245950a2fdbec5af696ce20257f42cd81ecf160e80bddb77a9a5"
     end
     on_arm do
       url "https://github.com/s0up4200/go-bdinfo/releases/download/v#{version}/bdinfo_#{version}_darwin_arm64.tar.gz"
-      sha256 "aaff9e73001dff80957ee064a85777e4ab78098b6476daa874ae9b2131b1202c"
+      sha256 "e2d29f20a042a6b8955e6a4edb280415fa05e4e81de5ccc821e004a4e74f5d14"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/s0up4200/go-bdinfo/releases/download/v#{version}/bdinfo_#{version}_linux_amd64.tar.gz"
-      sha256 "208cee1d11f8ca695defc6ae0e96c9fd98cbfa7ddf780c34f9c379bfcc92e304"
+      sha256 "12898104cfffc42010d7b7f9aff59d81624d2f10293c2979503fc0997fb0cb82"
     end
     on_arm do
       url "https://github.com/s0up4200/go-bdinfo/releases/download/v#{version}/bdinfo_#{version}_linux_arm64.tar.gz"
-      sha256 "52e8247adeee5b025af09bcf4d9d256fd6990b934a868a79e606c1f7bc6ba1f5"
+      sha256 "57cc7f5e4262f973b1bd243ad7b3936a50230cecd94440c4713fc2b3fdc3aa7d"
     end
   end
 
