@@ -3,6 +3,7 @@ package bdrom
 import (
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"strings"
 
@@ -614,6 +615,25 @@ func (p *PlaylistFile) loadStreamClips() {
 	}
 	for _, st := range p.TextStreams {
 		p.SortedStreams = append(p.SortedStreams, st)
+	}
+
+	p.updateVBRBitrates()
+}
+
+func (p *PlaylistFile) updateVBRBitrates() {
+	packetSeconds := 0.0
+	for _, clip := range p.StreamClips {
+		if clip.AngleIndex == 0 {
+			packetSeconds += clip.PacketSeconds
+		}
+	}
+	if packetSeconds <= 0 {
+		return
+	}
+	for _, playlistStream := range p.SortedStreams {
+		if playlistStream.Base().IsVBR {
+			playlistStream.Base().BitRate = int64(math.RoundToEven(float64(playlistStream.Base().PayloadBytes) * 8.0 / packetSeconds))
+		}
 	}
 }
 
