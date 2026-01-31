@@ -55,6 +55,8 @@ checksum:
   name_template: "checksums.txt"
 
 changelog:
+  abbrev: 7
+  format: "- [{{ .ShortHash }}](https://github.com/{{ .Env.GITHUB_REPOSITORY }}/commit/{{ .Hash }}) {{ .Message }} (@{{ .AuthorUsername }})"
   sort: asc
   use: github
   filters:
