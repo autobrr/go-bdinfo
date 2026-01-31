@@ -20,9 +20,24 @@ builds:
       - linux
       - darwin
       - windows
+      - freebsd
     goarch:
       - amd64
+      - arm
       - arm64
+    goarm:
+      - 6
+    ignore:
+      - goos: windows
+        goarch: arm
+      - goos: windows
+        goarch: arm64
+      - goos: darwin
+        goarch: arm
+      - goos: freebsd
+        goarch: arm
+      - goos: freebsd
+        goarch: arm64
 
 archives:
   - id: default
