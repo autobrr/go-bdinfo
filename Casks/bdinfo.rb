@@ -3,7 +3,7 @@ cask "bdinfo" do
   name "bdinfo"
   desc "Go rewrite of BDInfo."
   homepage "https://github.com/autobrr/go-bdinfo"
-  version "0.1.3"
+  version "0.2.0"
 
   livecheck do
     skip "Auto-generated on release."
@@ -14,22 +14,22 @@ cask "bdinfo" do
   on_macos do
     on_intel do
       url "https://github.com/autobrr/go-bdinfo/releases/download/v#{version}/bdinfo_#{version}_darwin_amd64.tar.gz"
-      sha256 "ce0c2857d4d7263c4d7f7b072f9af3e205af29409952f69a353fa5b1750800f5"
+      sha256 "3f89eed1876bad9054f33771b2efd8641d2eed21bdf99b04a7a1322312ce8934"
     end
     on_arm do
       url "https://github.com/autobrr/go-bdinfo/releases/download/v#{version}/bdinfo_#{version}_darwin_arm64.tar.gz"
-      sha256 "56ebb65dc9f71656892cdbfb92c8a4f0e9e61a5ccf2ab087d4e641180ddd9a70"
+      sha256 "4ae92517dedd2cc00112c634c71e3692084a428b1408800802a9f6d308b904d7"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/autobrr/go-bdinfo/releases/download/v#{version}/bdinfo_#{version}_linux_amd64.tar.gz"
-      sha256 "a32bb198372cad2eb6d48b12bb1eb72373f3b241b4012a6921d186536f89c952"
+      sha256 "74f20447baffbb094c14b2d12f524f237867d636f1c6805a71e9aee73f715d26"
     end
     on_arm do
       url "https://github.com/autobrr/go-bdinfo/releases/download/v#{version}/bdinfo_#{version}_linux_arm64.tar.gz"
-      sha256 "37ed62e6cddd34f1c41603cb74519611b4b15d8b2135318e2f8dbe56c9f10ce4"
+      sha256 "5a265daa4264edc110f596b777b22b8e641d0ef061ca98253927fe54552cc15b"
     end
   end
 
