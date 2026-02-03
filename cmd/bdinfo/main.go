@@ -36,6 +36,7 @@ type rootOptions struct {
 	forumsOnly       bool
 	mainOnly         bool
 	summaryOnly      bool
+	fullScan         bool
 	stdout           bool
 	selfUpdate       bool
 	progress         bool
@@ -107,6 +108,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&opts.forumsOnly, "forumsonly", "f", false, "Output only the forums paste block")
 	rootCmd.Flags().BoolVar(&opts.mainOnly, "main", false, "Output only the main playlist (likely what you want)")
 	rootCmd.Flags().BoolVarP(&opts.summaryOnly, "summaryonly", "s", false, "Output only the quick summary block (likely what you want)")
+	rootCmd.Flags().BoolVar(&opts.fullScan, "full", false, "Perform full scan for accurate bitrates (slower)")
 	rootCmd.Flags().BoolVar(&opts.selfUpdate, "self-update", false, "Update bdinfo to latest version (release builds only)")
 	rootCmd.Flags().BoolVar(&opts.selfUpdate, "update", false, "Update bdinfo to latest version (release builds only)")
 	rootCmd.Flags().BoolVar(&opts.progress, "progress", false, "Print scan progress to stderr")
@@ -185,6 +187,9 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		if s.SummaryOnly {
 			s.GenerateTextSummary = true
 		}
+	}
+	if flags.Changed("full") {
+		s.FullScan = opts.fullScan
 	}
 
 	if err := runForPath(opts.path, s, opts.progress); err != nil {
