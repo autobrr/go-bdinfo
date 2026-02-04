@@ -109,7 +109,8 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 
 	separator := strings.Repeat("#", 10)
 	for _, playlist := range playlists {
-		if settings.FilterLoopingPlaylists && !playlist.IsValid() {
+		// When MainPlaylistOnly is set, don't filter the selected main playlist
+		if !settings.MainPlaylistOnly && settings.FilterLoopingPlaylists && !playlist.IsValid() {
 			continue
 		}
 		var summary strings.Builder
@@ -440,50 +441,91 @@ func selectMainPlaylist(playlists []*bdrom.PlaylistFile, settings settings.Setti
 	if len(playlists) == 0 {
 		return playlists
 	}
+
+	// When selecting the main playlist, we should consider ALL playlists, not filtered ones
+	// The main feature is determined by objective criteria (file size), not by loop/duration filters
 	candidates := playlists
-	if settings.FilterLoopingPlaylists || settings.FilterShortPlaylists {
-		filtered := make([]*bdrom.PlaylistFile, 0, len(playlists))
-		for _, p := range playlists {
-			if p == nil {
-				continue
+
+	// Helper function to get the largest individual file size in a playlist
+	largestFileSize := func(pl *bdrom.PlaylistFile) uint64 {
+		var maxSize uint64
+		for _, clip := range pl.StreamClips {
+			if clip.AngleIndex == 0 && clip.FileSize > maxSize {
+				maxSize = clip.FileSize
 			}
-			if !p.IsValid() {
-				continue
-			}
-			filtered = append(filtered, p)
 		}
-		if len(filtered) > 0 {
-			candidates = filtered
-		}
+		return maxSize
 	}
-	main := candidates[0]
-	for _, p := range candidates[1:] {
+
+	// Calculate a composite score for each playlist considering multiple criteria
+	type playlistScore struct {
+		playlist *bdrom.PlaylistFile
+		score    float64
+	}
+
+	scores := make([]playlistScore, 0, len(candidates))
+
+	for _, p := range candidates {
 		if p == nil {
 			continue
 		}
-		mainBitrate := main.TotalBitRate()
-		pBitrate := p.TotalBitRate()
-		if pBitrate > mainBitrate {
-			main = p
-			continue
+
+		// Gather metrics
+		largestFile := float64(largestFileSize(p))
+		totalSize := float64(p.FileSize())
+		duration := p.TotalLength()
+		bitrate := float64(p.TotalBitRate())
+
+		// Calculate file concentration ratio (helps detect looping playlists)
+		// Main features typically have 1-2 large files, loops have many small repeated files
+		fileConcentration := 0.0
+		if totalSize > 0 {
+			fileConcentration = largestFile / totalSize
 		}
-		if pBitrate < mainBitrate {
-			continue
+
+		// Weighted scoring system:
+		// - Largest file size: 40% (strongest indicator of main feature)
+		// - Total file size: 30% (overall content size)
+		// - Duration: 20% (longer is typically main feature)
+		// - File concentration: 10% (high ratio = fewer large files = likely main feature)
+		// - Bitrate: bonus only (may not be available in quick scan)
+
+		score := 0.0
+
+		// Normalize largest file size (assume max possible is 100GB = 100*1024*1024*1024 bytes)
+		maxFileSize := 100.0 * 1024 * 1024 * 1024
+		score += (largestFile / maxFileSize) * 40.0
+
+		// Normalize total size (assume max is 150GB)
+		maxTotalSize := 150.0 * 1024 * 1024 * 1024
+		score += (totalSize / maxTotalSize) * 30.0
+
+		// Normalize duration (assume max is 4 hours = 14400 seconds)
+		maxDuration := 14400.0
+		score += (duration / maxDuration) * 20.0
+
+		// File concentration (already 0-1 ratio)
+		score += fileConcentration * 10.0
+
+		// Bitrate bonus (if available, add up to 5 bonus points)
+		if bitrate > 0 {
+			maxBitrate := 100000000.0 // 100 Mbps
+			score += (bitrate / maxBitrate) * 5.0
 		}
-		mainSize := main.TotalSize()
-		pSize := p.TotalSize()
-		if pSize > mainSize {
-			main = p
-			continue
-		}
-		if pSize < mainSize {
-			continue
-		}
-		if p.Name < main.Name {
-			main = p
-		}
+
+		scores = append(scores, playlistScore{playlist: p, score: score})
 	}
-	return []*bdrom.PlaylistFile{main}
+
+	// Sort by score (highest first)
+	sort.SliceStable(scores, func(i, j int) bool {
+		if math.Abs(scores[i].score-scores[j].score) < 0.001 {
+			// Tiebreaker: use name
+			return scores[i].playlist.Name < scores[j].playlist.Name
+		}
+		return scores[i].score > scores[j].score
+	})
+
+	return []*bdrom.PlaylistFile{scores[0].playlist}
 }
 
 func extractForumsBlocks(report string) string {
