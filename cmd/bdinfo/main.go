@@ -39,7 +39,6 @@ type rootOptions struct {
 	stdout           bool
 	selfUpdate       bool
 	progress         bool
-	bdinfoFormat     bool
 }
 
 var opts rootOptions
@@ -111,7 +110,6 @@ func init() {
 	rootCmd.Flags().BoolVar(&opts.selfUpdate, "self-update", false, "Update bdinfo to latest version (release builds only)")
 	rootCmd.Flags().BoolVar(&opts.selfUpdate, "update", false, "Update bdinfo to latest version (release builds only)")
 	rootCmd.Flags().BoolVar(&opts.progress, "progress", false, "Print scan progress to stderr")
-	rootCmd.Flags().BoolVar(&opts.bdinfoFormat, "bdinfo", false, "Save report as .bdinfo format (default is .txt)")
 
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(versionCmd)
@@ -169,9 +167,6 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	}
 	if opts.stdout {
 		s.ReportFileName = "-"
-	}
-	if flags.Changed("bdinfo") {
-		s.UseBDInfoFormat = opts.bdinfoFormat
 	}
 	if flags.Changed("includeversionandnotes") {
 		s.IncludeVersionAndNotes = opts.includeNotes

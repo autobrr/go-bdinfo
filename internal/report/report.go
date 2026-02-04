@@ -32,12 +32,8 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 		isKnownExt := ext == ".bdinfo" || ext == ".txt" || ext == ".json" || ext == ".csv" || ext == ".xml"
 
 		if ext == "" || !isKnownExt {
-			// No extension or unknown extension - add the default one
-			if settings.UseBDInfoFormat {
-				reportName = reportName + ".bdinfo"
-			} else {
-				reportName = reportName + ".txt"
-			}
+			// No extension or unknown extension - add .txt as default
+			reportName = reportName + ".txt"
 		}
 	}
 
