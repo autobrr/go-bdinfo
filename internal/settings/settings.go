@@ -30,7 +30,7 @@ func Default(reportBaseDir string) Settings {
 		FilterShortPlaylistsVal:   20,
 		KeepStreamOrder:           false,
 		GenerateTextSummary:       true,
-		ReportFileName:            filepath.Join(reportBaseDir, "BDInfo_{0}.bdinfo"),
+		ReportFileName:            filepath.Join(reportBaseDir, "BDInfo_{0}"),
 		IncludeVersionAndNotes:    true,
 		GroupByTime:               false,
 		ForumsOnly:                false,
