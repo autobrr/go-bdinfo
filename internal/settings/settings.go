@@ -18,6 +18,7 @@ type Settings struct {
 	ForumsOnly                bool
 	MainPlaylistOnly          bool
 	SummaryOnly               bool
+	FullScan                  bool
 }
 
 func Default(reportBaseDir string) Settings {
@@ -36,5 +37,6 @@ func Default(reportBaseDir string) Settings {
 		ForumsOnly:                false,
 		MainPlaylistOnly:          false,
 		SummaryOnly:               false,
+		FullScan:                  false,
 	}
 }

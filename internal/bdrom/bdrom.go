@@ -472,8 +472,9 @@ func (b *BDROM) Scan() ScanResult {
 	}
 	streamFiles = filteredStreamFiles
 	streamBytes := streamFilesTotalSize(streamFiles)
+	fullScan := b.Settings.FullScan
 	runParallel(streamFiles, scanWorkerLimit(len(streamFiles), streamBytes), func(streamFile *StreamFile) error {
-		return streamFile.Scan(streamPlaylists[streamFile], false)
+		return streamFile.Scan(streamPlaylists[streamFile], fullScan)
 	}, func(streamFile *StreamFile, err error) {
 		errMu.Lock()
 		result.FileErrors[streamFile.Name] = err
