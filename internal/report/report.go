@@ -109,7 +109,8 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 
 	separator := strings.Repeat("#", 10)
 	for _, playlist := range playlists {
-		if settings.FilterLoopingPlaylists && !playlist.IsValid() {
+		// When MainPlaylistOnly is set, don't filter the selected main playlist
+		if !settings.MainPlaylistOnly && settings.FilterLoopingPlaylists && !playlist.IsValid() {
 			continue
 		}
 		var summary strings.Builder
@@ -440,27 +441,58 @@ func selectMainPlaylist(playlists []*bdrom.PlaylistFile, settings settings.Setti
 	if len(playlists) == 0 {
 		return playlists
 	}
+
+	// When selecting the main playlist, we should consider ALL playlists, not filtered ones
+	// The main feature is determined by objective criteria (file size), not by loop/duration filters
 	candidates := playlists
-	if settings.FilterLoopingPlaylists || settings.FilterShortPlaylists {
-		filtered := make([]*bdrom.PlaylistFile, 0, len(playlists))
-		for _, p := range playlists {
-			if p == nil {
-				continue
+
+	// Helper function to get the largest individual file size in a playlist
+	largestFileSize := func(pl *bdrom.PlaylistFile) uint64 {
+		var maxSize uint64
+		for _, clip := range pl.StreamClips {
+			if clip.AngleIndex == 0 && clip.FileSize > maxSize {
+				maxSize = clip.FileSize
 			}
-			if !p.IsValid() {
-				continue
-			}
-			filtered = append(filtered, p)
 		}
-		if len(filtered) > 0 {
-			candidates = filtered
-		}
+		return maxSize
 	}
+
 	main := candidates[0]
 	for _, p := range candidates[1:] {
 		if p == nil {
 			continue
 		}
+		// Primary criterion: largest individual file size (main feature has at least one very large file)
+		mainLargestFile := largestFileSize(main)
+		pLargestFile := largestFileSize(p)
+		if pLargestFile > mainLargestFile {
+			main = p
+			continue
+		}
+		if pLargestFile < mainLargestFile {
+			continue
+		}
+		// Secondary criterion: total file size
+		mainFileSize := main.FileSize()
+		pFileSize := p.FileSize()
+		if pFileSize > mainFileSize {
+			main = p
+			continue
+		}
+		if pFileSize < mainFileSize {
+			continue
+		}
+		// Tertiary criterion: duration
+		mainDuration := main.TotalLength()
+		pDuration := p.TotalLength()
+		if pDuration > mainDuration {
+			main = p
+			continue
+		}
+		if pDuration < mainDuration {
+			continue
+		}
+		// Quaternary criterion: bitrate
 		mainBitrate := main.TotalBitRate()
 		pBitrate := p.TotalBitRate()
 		if pBitrate > mainBitrate {
@@ -470,15 +502,7 @@ func selectMainPlaylist(playlists []*bdrom.PlaylistFile, settings settings.Setti
 		if pBitrate < mainBitrate {
 			continue
 		}
-		mainSize := main.TotalSize()
-		pSize := p.TotalSize()
-		if pSize > mainSize {
-			main = p
-			continue
-		}
-		if pSize < mainSize {
-			continue
-		}
+		// Final tiebreaker: name
 		if p.Name < main.Name {
 			main = p
 		}
