@@ -84,6 +84,7 @@ type streamState struct {
 	tsCount             uint64
 	tsLast              uint64
 	ptsLast             uint64
+	lastDTS             uint64
 	lastDiff            int64
 	codecData           []byte
 	streamTag           string
@@ -138,23 +139,25 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	}
 
 	// compute length from playlists
-	length := 0.0
+	playlistLength := 0.0
 	for _, pl := range playlists {
 		for _, clip := range pl.StreamClips {
 			if clip.StreamFile == s && clip.AngleIndex == 0 {
-				if clip.Length > length {
-					length = clip.Length
+				if clip.Length > playlistLength {
+					playlistLength = clip.Length
 				}
 			}
 		}
 	}
-	s.Length = length
+	s.Length = playlistLength
 
 	scanSettings := settings.Settings{}
 	if len(playlists) > 0 {
 		scanSettings = playlists[0].Settings
 	}
-	collectDiagnostics := scanSettings.GenerateStreamDiagnostics
+	// Match BDInfo: stream diagnostics data is needed for chapter stats even when the
+	// report omits the STREAM DIAGNOSTICS table.
+	collectDiagnostics := true
 
 	fileInfo := s.FileInfo
 	if scanSettings.EnableSSIF && s.InterleavedFile != nil && s.InterleavedFile.FileInfo != nil {
@@ -414,7 +417,7 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	return nil
 }
 
-func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, states map[uint16]*streamState, pid uint16, state *streamState, ts uint64, isVideo bool, firstTS *uint64, lastTS *uint64) {
+func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, states map[uint16]*streamState, pid uint16, state *streamState, ts uint64, dtsForLength uint64, isVideo bool, firstDTS *uint64, lastDTS *uint64) {
 	if ts == 0 {
 		return
 	}
@@ -423,14 +426,19 @@ func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, states map[uint1
 		state.lastDiff = diff
 		if isVideo {
 			s.updateStreamBitrates(playlists, states, pid, ts, diff)
-			if *firstTS == 0 || ts < *firstTS {
-				*firstTS = ts
-			}
-			if ts > *lastTS {
-				*lastTS = ts
-			}
-			if *lastTS > *firstTS {
-				s.Length = float64(*lastTS-*firstTS) / 90000.0
+			// BDInfo computes TSStreamFile.Length using DTS (when present). For PES packets that
+			// only include PTS, BDInfo continues to use the last seen DTS and does not extend
+			// the file duration based on PTS-only timestamps.
+			if dtsForLength > 0 {
+				if *firstDTS == 0 || dtsForLength < *firstDTS {
+					*firstDTS = dtsForLength
+				}
+				if dtsForLength > *lastDTS {
+					*lastDTS = dtsForLength
+				}
+				if *lastDTS > *firstDTS {
+					s.Length = float64(*lastDTS-*firstDTS) / 90000.0
+				}
 			}
 		}
 	}
@@ -445,6 +453,7 @@ func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, p
 	}
 	switch state.pesPtsDtsFlags {
 	case 2:
+		// PTS only (no DTS present).
 		if len(state.pesHeaderBuf) < 14 {
 			return
 		}
@@ -452,16 +461,8 @@ func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, p
 		if pts > 0 {
 			state.ptsLast = pts
 		}
-		if len(state.pesHeaderBuf) >= 19 && validTimestamp(state.pesHeaderBuf[14:19], 0x10) {
-			dts := parsePTS(state.pesHeaderBuf[14:19])
-			if dts > 0 {
-				s.handleTimestamp(playlists, states, pid, state, dts, isVideo, firstTS, lastTS)
-			} else {
-				s.handleTimestamp(playlists, states, pid, state, pts, isVideo, firstTS, lastTS)
-			}
-		} else {
-			s.handleTimestamp(playlists, states, pid, state, pts, isVideo, firstTS, lastTS)
-		}
+		// For duration calculation, keep using the last DTS observed for this stream.
+		s.handleTimestamp(playlists, states, pid, state, pts, state.lastDTS, isVideo, firstTS, lastTS)
 		state.pesHeaderParsed = true
 	case 3:
 		if len(state.pesHeaderBuf) < 19 {
@@ -476,7 +477,8 @@ func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, p
 			dts = pts
 		}
 		if dts > 0 {
-			s.handleTimestamp(playlists, states, pid, state, dts, isVideo, firstTS, lastTS)
+			state.lastDTS = dts
+			s.handleTimestamp(playlists, states, pid, state, dts, dts, isVideo, firstTS, lastTS)
 		}
 		state.pesHeaderParsed = true
 	}
