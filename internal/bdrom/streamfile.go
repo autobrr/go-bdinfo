@@ -1,7 +1,6 @@
 package bdrom
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"math"
@@ -181,9 +180,8 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 
 	s.Size = fileInfo.Length()
 
-	reader := bufio.NewReaderSize(f, 1<<20)
 	first := make([]byte, 192)
-	if _, err := io.ReadFull(reader, first); err != nil {
+	if _, err := io.ReadFull(f, first); err != nil {
 		return err
 	}
 
@@ -449,18 +447,32 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	if chunkSize < packetSize {
 		chunkSize = packetSize * 256
 	}
-	buf := make([]byte, chunkSize)
+
+	// First read grabs 192 bytes to detect sync/packet size. For 188-byte TS packets this
+	// includes the first 4 bytes of the next packet; carry those forward.
+	carryLen := len(first) - packetSize
+
+	// Buffer includes room for carry bytes and a remainder (up to packetSize-1).
+	buf := make([]byte, chunkSize+packetSize)
+	if carryLen > 0 {
+		copy(buf, first[packetSize:])
+	}
 	for {
-		n, err := io.ReadFull(reader, buf)
-		if err != nil {
-			if err == io.ErrUnexpectedEOF {
-				n -= n % packetSize
-			} else {
-				break
-			}
+		n, err := f.Read(buf[carryLen : carryLen+chunkSize])
+		if n == 0 && err != nil {
+			break
 		}
-		for i := 0; i+packetSize <= n; i += packetSize {
+
+		n += carryLen
+		aligned := n - (n % packetSize)
+		for i := 0; i+packetSize <= aligned; i += packetSize {
 			processPacket(buf[i : i+packetSize])
+		}
+
+		// Preserve remainder bytes for next read.
+		carryLen = n - aligned
+		if carryLen > 0 {
+			copy(buf, buf[aligned:n])
 		}
 		if err != nil {
 			break
