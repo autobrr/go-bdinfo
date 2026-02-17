@@ -251,6 +251,43 @@ See [plan.md](plan.md) for detailed implementation plan and remaining work.
 5. Maintain compatibility with original output formats
 6. **Debug Tools**: Name temporary debug commands with prefixes like `test`, `debug`, or `check` (e.g., `cmd/teststream/`, `cmd/debugfids/`) so they can be easily identified and deleted later
 
+## Parity Loop (Official BDInfo)
+Goal: 1:1 parity with official BDInfo report text. Loop-to-done: run parity checks after changes; land regression tests when it fits.
+
+### Official Binary + Source
+- Official Linux BDInfo binary (workspace convention): `~/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo`
+- C# reference source: `~/github/oss/BDInfo-src/BDInfo.Core/BDCommon/rom/`
+
+### Quick Manual Parity Check (Report Text)
+Sample disc (avoid full dataset sweeps; pick 1-2 discs): `/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT`
+
+Generate official + ours and diff:
+```sh
+disc=/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT
+off=~/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo
+
+$off -p "$disc" -o /tmp/bdinfo-parity/official.txt
+go run ./cmd/bdinfo -p "$disc" -o /tmp/bdinfo-parity/ours.txt
+diff -u /tmp/bdinfo-parity/official.txt /tmp/bdinfo-parity/ours.txt
+```
+
+### Slow Oracle Test (Fuzzy Normalized)
+Test: `internal/parity/bdinfo_parity_test.go` (gated; normalizes line endings/trailing whitespace).
+
+Env vars:
+- `BDINFO_PARITY=1` enable
+- `BDINFO_PARITY_DISC=/path/to/disc`
+- `BDINFO_OFFICIAL_BIN=/path/to/official/BDInfo` (optional)
+- `BDINFO_OFFICIAL_REPORT=/path/to/official.txt` (optional; skips running official binary)
+
+Run:
+```sh
+BDINFO_PARITY=1 \
+BDINFO_PARITY_DISC=/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT \
+BDINFO_OFFICIAL_REPORT=/tmp/bdinfo-parity/official.txt \
+go test ./internal/parity -run TestParity_OfficialBDInfo_ReportText -count=1
+```
+
 ## C# Source Reference Structure
 The `BDInfo-master/` directory contains:
 - `BDCommon/rom/`: Core parsing logic
