@@ -264,6 +264,7 @@ Goal: 1:1 parity with official BDInfo report text. Loop-to-done: run parity chec
 ### Output Quirks To Match (Gotchas)
 - Hidden-tracks note: official inserts `\\n\\r\\n` before `(*) Indicates included stream hidden by this playlist.` when `playlist.HasHiddenTracks` is true. See `internal/report/report.go`.
 - Chapter stats: official `Avg Frame Size` depends on per-transfer `StreamTag` from codec scan; do not default missing tags to `"I"`. Tag parse lives in `internal/bdrom/streamfile.go` (ported from `TSCodecAVC.cs`, `TSCodecMPEG2.cs`, `TSCodecVC1.cs`).
+- Stream Diagnostics timing: official uses `clip.StreamFile.Length` (TSStreamFile.Length), which is DTS-derived and stays `0` unless at least 2 DTS-bearing timestamps are observed. Do not seed `StreamFile.Length` from playlist clip length (tiny/partial captures differ). See `internal/bdrom/streamfile.go`.
 - HEVC chapter stats: official HEVC tag selection depends on init state and transfer size.
   - Uninitialized: keep scanning; last slice overwrites earlier tags (can become null). Buffer cap is effectively 5MB (`TSStreamBuffer`).
   - Initialized: stop at first non-null tag.
