@@ -264,6 +264,10 @@ Goal: 1:1 parity with official BDInfo report text. Loop-to-done: run parity chec
 ### Output Quirks To Match (Gotchas)
 - Hidden-tracks note: official inserts `\\n\\r\\n` before `(*) Indicates included stream hidden by this playlist.` when `playlist.HasHiddenTracks` is true. See `internal/report/report.go`.
 - Chapter stats: official `Avg Frame Size` depends on per-transfer `StreamTag` from codec scan; do not default missing tags to `"I"`. Tag parse lives in `internal/bdrom/streamfile.go` (ported from `TSCodecAVC.cs`, `TSCodecMPEG2.cs`, `TSCodecVC1.cs`).
+- HEVC chapter stats: official HEVC tag selection depends on init state and transfer size.
+  - Uninitialized: keep scanning; last slice overwrites earlier tags (can become null). Buffer cap is effectively 5MB (`TSStreamBuffer`).
+  - Initialized: stop at first non-null tag.
+  - Go impl: `internal/codec/hevc_tag.go` + `internal/bdrom/streamfile.go` (5MB pre-init buffer, shrink after SPS). Test: `internal/codec/hevc_tag_test.go`.
 
 ### Quick Manual Parity Check (Report Text)
 Sample disc (avoid full dataset sweeps; pick 1-2 discs): `/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT`
