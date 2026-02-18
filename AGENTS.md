@@ -26,6 +26,8 @@ diff -u --text "$out/official.txt" "$out/ours.txt"
 Notes:
 - IO: don’t sweep all of `/mnt/storage/torrents*`; sample a few discs per type.
 - ISO/UDF: BD-ROM ISOs commonly use a metadata partition map and multi-extent files; UDF reads must be concurrency-safe (use `ReadAt`-based access, no shared `Seek`).
+- Speed loop: always measure official vs ours on the same sample path and compare wall time with exact command logs.
+- Current perf policy: ISO stream scans default to 1 worker (override with `BDINFO_WORKERS`) to avoid shared-image seek thrash.
 - Debug helper: `go run ./cmd/debugudf -iso "<path>.iso"` (lists key dirs/files, sanity-checks headers/sizes).
 
 The C# code serves as the authoritative reference for:

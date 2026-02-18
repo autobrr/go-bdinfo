@@ -71,11 +71,16 @@ type ScanResult struct {
 
 const maxScanWorkers = 8
 
-func scanWorkerLimit(total int, totalBytes uint64) int {
+func scanWorkerLimit(total int, totalBytes uint64, isISO bool) int {
 	if override := os.Getenv("BDINFO_WORKERS"); override != "" {
 		if parsed, err := strconv.Atoi(override); err == nil && parsed > 0 {
 			return clampWorkers(parsed, total)
 		}
+	}
+	if isISO && totalBytes > 0 {
+		// ISO stream scans are all reads from one backing file; parallel pread workers
+		// tend to seek-thrash and reduce throughput.
+		return clampWorkers(1, total)
 	}
 	limit := tunedWorkerLimit(total, totalBytes)
 	return clampWorkers(limit, total)
@@ -436,7 +441,7 @@ func (b *BDROM) Scan() ScanResult {
 	var errMu sync.Mutex
 
 	clipFiles := orderedStreamClipFiles(b.StreamClipFiles)
-	runParallel(clipFiles, scanWorkerLimit(len(clipFiles), 0), func(clip *StreamClipFile) error {
+	runParallel(clipFiles, scanWorkerLimit(len(clipFiles), 0, false), func(clip *StreamClipFile) error {
 		return clip.Scan()
 	}, func(clip *StreamClipFile, err error) {
 		errMu.Lock()
@@ -452,7 +457,7 @@ func (b *BDROM) Scan() ScanResult {
 	}
 
 	playlists := orderedPlaylists(b.PlaylistFiles, b.PlaylistOrder)
-	runParallel(playlists, scanWorkerLimit(len(playlists), 0), func(playlist *PlaylistFile) error {
+	runParallel(playlists, scanWorkerLimit(len(playlists), 0, false), func(playlist *PlaylistFile) error {
 		return playlist.Scan(b.StreamFiles, b.StreamClipFiles)
 	}, func(playlist *PlaylistFile, err error) {
 		errMu.Lock()
@@ -472,7 +477,7 @@ func (b *BDROM) Scan() ScanResult {
 	}
 	streamFiles = filteredStreamFiles
 	streamBytes := streamFilesTotalSize(streamFiles)
-	runParallel(streamFiles, scanWorkerLimit(len(streamFiles), streamBytes), func(streamFile *StreamFile) error {
+	runParallel(streamFiles, scanWorkerLimit(len(streamFiles), streamBytes, b.fileSystem.IsISO()), func(streamFile *StreamFile) error {
 		return streamFile.Scan(streamPlaylists[streamFile], false)
 	}, func(streamFile *StreamFile, err error) {
 		errMu.Lock()
@@ -480,7 +485,7 @@ func (b *BDROM) Scan() ScanResult {
 		errMu.Unlock()
 	})
 
-	runParallel(playlists, scanWorkerLimit(len(playlists), 0), func(playlist *PlaylistFile) error {
+	runParallel(playlists, scanWorkerLimit(len(playlists), 0, false), func(playlist *PlaylistFile) error {
 		playlist.Initialize()
 		return nil
 	}, nil)
@@ -518,7 +523,7 @@ func (b *BDROM) ScanFull() ScanResult {
 	var errMu sync.Mutex
 
 	playlists := orderedPlaylists(b.PlaylistFiles, b.PlaylistOrder)
-	runParallel(playlists, scanWorkerLimit(len(playlists), 0), func(playlist *PlaylistFile) error {
+	runParallel(playlists, scanWorkerLimit(len(playlists), 0, false), func(playlist *PlaylistFile) error {
 		playlist.ClearBitrates()
 		return nil
 	}, nil)
@@ -534,7 +539,7 @@ func (b *BDROM) ScanFull() ScanResult {
 	}
 	streamFiles = filteredStreamFiles
 	streamBytes := streamFilesTotalSize(streamFiles)
-	runParallel(streamFiles, scanWorkerLimit(len(streamFiles), streamBytes), func(streamFile *StreamFile) error {
+	runParallel(streamFiles, scanWorkerLimit(len(streamFiles), streamBytes, b.fileSystem.IsISO()), func(streamFile *StreamFile) error {
 		return streamFile.Scan(streamPlaylists[streamFile], true)
 	}, func(streamFile *StreamFile, err error) {
 		errMu.Lock()
