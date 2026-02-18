@@ -285,6 +285,7 @@ diff -u /tmp/bdinfo-parity/official.txt /tmp/bdinfo-parity/ours.txt
 
 ### Slow Oracle Test (Fuzzy Normalized)
 Test: `internal/parity/bdinfo_parity_test.go` (gated; normalizes line endings/trailing whitespace).
+It forces both official + go-bdinfo to `internal/settings.Default(...)` toggles for stable comparisons.
 
 Env vars:
 - `BDINFO_PARITY=1` enable
