@@ -29,6 +29,8 @@ Notes:
 - Speed loop: always measure official vs ours on the same sample path and compare wall time with exact command logs.
 - Current perf policy: stream scans default to 1 worker (override with `BDINFO_WORKERS`) to avoid seek thrash on this storage profile.
 - Harness: `scripts/speed_parity_loop.sh --disc "<disc-or-iso>" --reps 3` (matched toggles, per-rep parity check, median ratio).
+- Perf hotspot loop: if Network-like discs regress, check `internal/bdrom/streamfile.go` clip-target matching path first (active target cursor), then re-run harness.
+- Sample cadence: smoke with `--reps 1` on ISO + Static + Network, then `--reps 3` on the regressing sample.
 - Debug helper: `go run ./cmd/debugudf -iso "<path>.iso"` (lists key dirs/files, sanity-checks headers/sizes).
 
 The C# code serves as the authoritative reference for:

@@ -21,7 +21,7 @@ func TestUpdateStreamBitrate_DiagnosticsTagMayBeEmpty(t *testing.T) {
 		// streamTag intentionally empty (official BDInfo uses null).
 	}
 
-	sf.updateStreamBitrate(nil, pid, 90000, 90000, st)
+	sf.updateStreamBitrate(nil, nil, pid, 90000, 90000, st)
 
 	diags := sf.StreamDiagnostics[pid]
 	if len(diags) != 1 {

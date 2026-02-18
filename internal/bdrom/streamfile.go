@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 
@@ -114,6 +115,18 @@ type scanClipTarget struct {
 	streams map[uint16]stream.Info
 }
 
+// clipTargetCursor narrows clip-target scans to time-overlapping clips while
+// preserving original target iteration order for deterministic updates.
+type clipTargetCursor struct {
+	targets     []scanClipTarget
+	startOrder  []int
+	allOrder    []int
+	activeOrder []int
+	nextStart   int
+	lastTime    float64
+	hasLast     bool
+}
+
 func buildClipTargets(playlists []*PlaylistFile, streamName string) []scanClipTarget {
 	if playlists == nil {
 		return nil
@@ -135,6 +148,97 @@ func buildClipTargets(playlists []*PlaylistFile, streamName string) []scanClipTa
 		}
 	}
 	return targets
+}
+
+func newClipTargetCursor(targets []scanClipTarget) *clipTargetCursor {
+	if len(targets) == 0 {
+		return nil
+	}
+	startOrder := make([]int, len(targets))
+	allOrder := make([]int, len(targets))
+	for i := range targets {
+		startOrder[i] = i
+		allOrder[i] = i
+	}
+	sort.SliceStable(startOrder, func(i, j int) bool {
+		left := targets[startOrder[i]].clip
+		right := targets[startOrder[j]].clip
+		if left.TimeIn == right.TimeIn {
+			return startOrder[i] < startOrder[j]
+		}
+		return left.TimeIn < right.TimeIn
+	})
+	return &clipTargetCursor{
+		targets:    targets,
+		startOrder: startOrder,
+		allOrder:   allOrder,
+	}
+}
+
+func (c *clipTargetCursor) activeIndices(streamTime float64) []int {
+	if c == nil || len(c.targets) == 0 {
+		return nil
+	}
+	if streamTime == 0 {
+		return c.allOrder
+	}
+	if !c.hasLast || streamTime < c.lastTime {
+		c.reset(streamTime)
+	} else {
+		c.advance(streamTime)
+	}
+	c.lastTime = streamTime
+	c.hasLast = true
+	return c.activeOrder
+}
+
+func (c *clipTargetCursor) advance(streamTime float64) {
+	for c.nextStart < len(c.startOrder) {
+		idx := c.startOrder[c.nextStart]
+		if c.targets[idx].clip.TimeIn > streamTime {
+			break
+		}
+		c.activate(idx)
+		c.nextStart++
+	}
+	c.prune(streamTime)
+}
+
+func (c *clipTargetCursor) reset(streamTime float64) {
+	c.nextStart = sort.Search(len(c.startOrder), func(i int) bool {
+		idx := c.startOrder[i]
+		return c.targets[idx].clip.TimeIn > streamTime
+	})
+	c.activeOrder = c.activeOrder[:0]
+	for i := 0; i < c.nextStart; i++ {
+		idx := c.startOrder[i]
+		if streamTime <= c.targets[idx].clip.TimeOut {
+			c.activate(idx)
+		}
+	}
+}
+
+func (c *clipTargetCursor) activate(idx int) {
+	pos := sort.SearchInts(c.activeOrder, idx)
+	if pos < len(c.activeOrder) && c.activeOrder[pos] == idx {
+		return
+	}
+	c.activeOrder = append(c.activeOrder, 0)
+	copy(c.activeOrder[pos+1:], c.activeOrder[pos:])
+	c.activeOrder[pos] = idx
+}
+
+func (c *clipTargetCursor) prune(streamTime float64) {
+	if len(c.activeOrder) == 0 {
+		return
+	}
+	kept := c.activeOrder[:0]
+	for _, idx := range c.activeOrder {
+		if streamTime <= c.targets[idx].clip.TimeOut {
+			kept = append(kept, idx)
+		}
+	}
+	c.activeOrder = kept
 }
 
 func NewStreamFile(fileInfo fs.FileInfo) *StreamFile {
@@ -265,6 +369,7 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	firstTS := uint64(0)
 	lastTS := uint64(0)
 	clipTargets := buildClipTargets(playlists, s.Name)
+	clipCursor := newClipTargetCursor(clipTargets)
 
 	processPacket := func(pkt []byte) {
 		if len(pkt) <= syncOffset || pkt[syncOffset] != 0x47 {
@@ -385,7 +490,7 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 					}
 				}
 			}
-			s.parsePESHeaderTimestamp(state, isVideo, playlists, clipTargets, states, pid, &firstTS, &lastTS)
+			s.parsePESHeaderTimestamp(state, isVideo, playlists, clipTargets, clipCursor, states, pid, &firstTS, &lastTS)
 		}
 		if len(payload) == 0 {
 			return
@@ -593,7 +698,7 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 			ptsLast = state.ptsLast
 			ptsDiff = int64(ptsLast) - int64(state.dtsPrev)
 		}
-		s.updateStreamBitrates(playlists, clipTargets, states, pid, ptsLast, ptsDiff)
+		s.updateStreamBitrates(playlists, clipTargets, clipCursor, states, pid, ptsLast, ptsDiff)
 	}
 
 	for pid, st := range s.Streams {
@@ -654,7 +759,7 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	return nil
 }
 
-func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, clipTargets []scanClipTarget, states map[uint16]*streamState, pid uint16, state *streamState, ts uint64, dtsForLength uint64, isVideo bool, firstDTS *uint64, lastDTS *uint64) {
+func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, clipTargets []scanClipTarget, clipCursor *clipTargetCursor, states map[uint16]*streamState, pid uint16, state *streamState, ts uint64, dtsForLength uint64, isVideo bool, firstDTS *uint64, lastDTS *uint64) {
 	if ts == 0 {
 		return
 	}
@@ -662,7 +767,7 @@ func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, clipTargets []sc
 		diff := int64(ts) - int64(state.dtsPrev)
 		state.lastDiff = diff
 		if isVideo {
-			s.updateStreamBitrates(playlists, clipTargets, states, pid, ts, diff)
+			s.updateStreamBitrates(playlists, clipTargets, clipCursor, states, pid, ts, diff)
 			// BDInfo computes TSStreamFile.Length using DTS (when present). For PES packets that
 			// only include PTS, BDInfo continues to use the last seen DTS and does not extend
 			// the file duration based on PTS-only timestamps.
@@ -684,7 +789,7 @@ func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, clipTargets []sc
 	state.tsCount++
 }
 
-func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, playlists []*PlaylistFile, clipTargets []scanClipTarget, states map[uint16]*streamState, pid uint16, firstTS *uint64, lastTS *uint64) {
+func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, playlists []*PlaylistFile, clipTargets []scanClipTarget, clipCursor *clipTargetCursor, states map[uint16]*streamState, pid uint16, firstTS *uint64, lastTS *uint64) {
 	if !isVideo || state.pesHeaderParsed {
 		return
 	}
@@ -699,7 +804,7 @@ func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, p
 			state.ptsLast = pts
 		}
 		// For duration calculation, keep using the last DTS observed for this stream.
-		s.handleTimestamp(playlists, clipTargets, states, pid, state, pts, state.lastDTS, isVideo, firstTS, lastTS)
+		s.handleTimestamp(playlists, clipTargets, clipCursor, states, pid, state, pts, state.lastDTS, isVideo, firstTS, lastTS)
 		state.pesHeaderParsed = true
 	case 3:
 		if len(state.pesHeaderBuf) < 19 {
@@ -715,13 +820,13 @@ func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, p
 		}
 		if dts > 0 {
 			state.lastDTS = dts
-			s.handleTimestamp(playlists, clipTargets, states, pid, state, dts, dts, isVideo, firstTS, lastTS)
+			s.handleTimestamp(playlists, clipTargets, clipCursor, states, pid, state, dts, dts, isVideo, firstTS, lastTS)
 		}
 		state.pesHeaderParsed = true
 	}
 }
 
-func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, clipTargets []scanClipTarget, states map[uint16]*streamState, ptsPID uint16, pts uint64, ptsDiff int64) {
+func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, clipTargets []scanClipTarget, clipCursor *clipTargetCursor, states map[uint16]*streamState, ptsPID uint16, pts uint64, ptsDiff int64) {
 	if playlists == nil {
 		return
 	}
@@ -734,7 +839,7 @@ func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, clipTargets
 				continue
 			}
 		}
-		s.updateStreamBitrate(clipTargets, pid, pts, ptsDiff, state)
+		s.updateStreamBitrate(clipTargets, clipCursor, pid, pts, ptsDiff, state)
 	}
 }
 
@@ -760,7 +865,7 @@ func (s *StreamFile) finalizePlaylistVBR(playlists []*PlaylistFile) {
 	}
 }
 
-func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, pid uint16, pts uint64, ptsDiff int64, state *streamState) {
+func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, clipCursor *clipTargetCursor, pid uint16, pts uint64, ptsDiff int64, state *streamState) {
 	if state == nil {
 		return
 	}
@@ -768,32 +873,67 @@ func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, pid uint1
 	streamInterval := float64(ptsDiff) / 90000.0
 	streamOffset := streamTime + streamInterval
 
-	for _, target := range clipTargets {
-		clip := target.clip
-		if streamTime != 0 && (streamTime < clip.TimeIn || streamTime > clip.TimeOut) {
-			continue
-		}
-		clip.PayloadBytes += state.windowBytes
-		clip.PacketCount += state.windowPackets
+	if clipCursor != nil {
+		for _, idx := range clipCursor.activeIndices(streamTime) {
+			target := clipTargets[idx]
+			clip := target.clip
+			if streamTime != 0 && (streamTime < clip.TimeIn || streamTime > clip.TimeOut) {
+				continue
+			}
+			clip.PayloadBytes += state.windowBytes
+			clip.PacketCount += state.windowPackets
 
-		if streamOffset > clip.TimeIn && streamOffset-clip.TimeIn > clip.PacketSeconds {
-			clip.PacketSeconds = streamOffset - clip.TimeIn
-		}
+			if streamOffset > clip.TimeIn && streamOffset-clip.TimeIn > clip.PacketSeconds {
+				clip.PacketSeconds = streamOffset - clip.TimeIn
+			}
 
-		if target.streams != nil {
-			if streamInfo, ok := target.streams[pid]; ok {
-				streamInfo.Base().PayloadBytes += state.windowBytes
-				streamInfo.Base().PacketCount += state.windowPackets
+			if target.streams != nil {
+				if streamInfo, ok := target.streams[pid]; ok {
+					streamInfo.Base().PayloadBytes += state.windowBytes
+					streamInfo.Base().PacketCount += state.windowPackets
 
-				if streamInfo.Base().IsVideoStream() {
-					streamInfo.Base().PacketSeconds += streamInterval
-					if streamInfo.Base().PacketSeconds > 0 {
-						streamInfo.Base().ActiveBitRate = int64(math.RoundToEven(float64(streamInfo.Base().PayloadBytes) * 8.0 / streamInfo.Base().PacketSeconds))
+					if streamInfo.Base().IsVideoStream() {
+						streamInfo.Base().PacketSeconds += streamInterval
+						if streamInfo.Base().PacketSeconds > 0 {
+							streamInfo.Base().ActiveBitRate = int64(math.RoundToEven(float64(streamInfo.Base().PayloadBytes) * 8.0 / streamInfo.Base().PacketSeconds))
+						}
+					}
+					if streamInfo.Base().StreamType == stream.StreamTypeAC3TrueHDAudio {
+						if audio, ok := streamInfo.(*stream.AudioStream); ok && audio.CoreStream != nil {
+							streamInfo.Base().ActiveBitRate -= audio.CoreStream.BitRate
+						}
 					}
 				}
-				if streamInfo.Base().StreamType == stream.StreamTypeAC3TrueHDAudio {
-					if audio, ok := streamInfo.(*stream.AudioStream); ok && audio.CoreStream != nil {
-						streamInfo.Base().ActiveBitRate -= audio.CoreStream.BitRate
+			}
+		}
+	} else {
+		for _, target := range clipTargets {
+			clip := target.clip
+			if streamTime != 0 && (streamTime < clip.TimeIn || streamTime > clip.TimeOut) {
+				continue
+			}
+			clip.PayloadBytes += state.windowBytes
+			clip.PacketCount += state.windowPackets
+
+			if streamOffset > clip.TimeIn && streamOffset-clip.TimeIn > clip.PacketSeconds {
+				clip.PacketSeconds = streamOffset - clip.TimeIn
+			}
+
+			if target.streams != nil {
+				if streamInfo, ok := target.streams[pid]; ok {
+					streamInfo.Base().PayloadBytes += state.windowBytes
+					streamInfo.Base().PacketCount += state.windowPackets
+
+					if streamInfo.Base().IsVideoStream() {
+						streamInfo.Base().PacketSeconds += streamInterval
+						if streamInfo.Base().PacketSeconds > 0 {
+							streamInfo.Base().ActiveBitRate = int64(math.RoundToEven(float64(streamInfo.Base().PayloadBytes) * 8.0 / streamInfo.Base().PacketSeconds))
+						}
+					}
+					if streamInfo.Base().StreamType == stream.StreamTypeAC3TrueHDAudio {
+						if audio, ok := streamInfo.(*stream.AudioStream); ok && audio.CoreStream != nil {
+							streamInfo.Base().ActiveBitRate -= audio.CoreStream.BitRate
+						}
 					}
 				}
 			}
