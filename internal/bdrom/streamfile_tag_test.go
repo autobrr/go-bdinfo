@@ -37,4 +37,3 @@ func TestUpdateStreamBitrate_DiagnosticsTagMayBeEmpty(t *testing.T) {
 			st.streamTag, st.tagParse, st.avcAUDParse, st.mpeg2PictureParse, st.vc1FrameHeaderParse, st.vc1SeqHeaderParse, st.vc1IsInterlaced)
 	}
 }
-

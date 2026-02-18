@@ -20,4 +20,3 @@ func TestNormalizeArgs_BoolValueTokens(t *testing.T) {
 		}
 	}
 }
-

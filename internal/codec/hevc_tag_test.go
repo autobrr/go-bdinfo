@@ -50,4 +50,3 @@ func TestHEVCFrameTagFromTransfer_InitializedVsUninitialized(t *testing.T) {
 		t.Fatalf("uninitialized: got %q, want empty", got)
 	}
 }
-

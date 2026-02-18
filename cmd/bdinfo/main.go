@@ -175,8 +175,8 @@ func normalizeArgs(args []string) []string {
 		"-w": "--printtoconsole", "--printtoconsole": "--printtoconsole",
 		"-z": "--printonlybigplaylist", "--printonlybigplaylist": "--printonlybigplaylist",
 		"--main": "--main",
-		"-s": "--summaryonly", "--summaryonly": "--summaryonly",
-		"--stdout": "--stdout",
+		"-s":     "--summaryonly", "--summaryonly": "--summaryonly",
+		"--stdout":   "--stdout",
 		"--progress": "--progress",
 	}
 
