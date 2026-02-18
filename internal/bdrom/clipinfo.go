@@ -78,6 +78,9 @@ func (s *StreamClipFile) Scan() error {
 		var st stream.Info
 		switch streamType {
 		case stream.StreamTypeHEVCVideo, stream.StreamTypeAVCVideo, stream.StreamTypeMPEG1Video, stream.StreamTypeMPEG2Video, stream.StreamTypeVC1Video:
+			if offset+4 > len(clipData) {
+				break
+			}
 			videoFormat := stream.VideoFormat(clipData[offset+2] >> 4)
 			frameRate := stream.FrameRate(clipData[offset+2] & 0x0F)
 			aspectRatio := stream.AspectRatio(clipData[offset+3] >> 4)
