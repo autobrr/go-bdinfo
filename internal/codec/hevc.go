@@ -17,6 +17,14 @@ const (
 )
 
 const (
+	// Defensive bounds for malformed Exp-Golomb values in fuzzed streams.
+	// Real HEVC bitstreams stay far below these.
+	hevcMaxShortTermRefPicSets = 64
+	hevcMaxLongTermRefPicsSps  = 64
+	hevcMaxRefPics             = 512
+)
+
+const (
 	seiMasteringDisplayColourVolume       = 137
 	seiContentLightLevel                  = 144
 	seiAlternativeTransferCharacteristics = 147
@@ -243,9 +251,15 @@ func parseHEVCSPSVUI(br *buffer.BitReader, maxSubLayersMinus1 uint64, log2MaxPic
 	}
 
 	numShortTermRefPicSets := readUE()
+	if numShortTermRefPicSets > hevcMaxShortTermRefPicSets {
+		numShortTermRefPicSets = hevcMaxShortTermRefPicSets
+	}
 	skipHEVCShortTermRefPicSets(br, numShortTermRefPicSets)
 	if readBool() { // long_term_ref_pics_present_flag
 		numLongTermRefPicsSps := readUE()
+		if numLongTermRefPicsSps > hevcMaxLongTermRefPicsSps {
+			numLongTermRefPicsSps = hevcMaxLongTermRefPicsSps
+		}
 		for range numLongTermRefPicsSps {
 			_ = br.SkipBits(int(log2MaxPicOrderCntLsbMinus4 + 4))
 			_ = br.SkipBits(1)
@@ -305,6 +319,9 @@ func skipHEVCShortTermRefPicSets(br *buffer.BitReader, numShortTermRefPicSets ui
 		return v
 	}
 
+	if numShortTermRefPicSets > hevcMaxShortTermRefPicSets {
+		numShortTermRefPicSets = hevcMaxShortTermRefPicSets
+	}
 	numPics := uint64(0)
 	for stRpsIdx := range numShortTermRefPicSets {
 		interRefPicSetPredictionFlag := false
@@ -322,6 +339,9 @@ func skipHEVCShortTermRefPicSets(br *buffer.BitReader, numShortTermRefPicSets ui
 			_ = br.SkipBits(1)
 			_ = readUE()
 			numPicsNew := uint64(0)
+			if numPics > hevcMaxRefPics {
+				numPics = hevcMaxRefPics
+			}
 			for picPos := uint64(0); picPos <= numPics; picPos++ {
 				if readBool() {
 					numPicsNew++
@@ -329,11 +349,23 @@ func skipHEVCShortTermRefPicSets(br *buffer.BitReader, numShortTermRefPicSets ui
 					numPicsNew++
 				}
 			}
+			if numPicsNew > hevcMaxRefPics {
+				numPicsNew = hevcMaxRefPics
+			}
 			numPics = numPicsNew
 		} else {
 			numNegativePics := readUE()
 			numPositivePics := readUE()
+			if numNegativePics > hevcMaxRefPics {
+				numNegativePics = hevcMaxRefPics
+			}
+			if numPositivePics > hevcMaxRefPics {
+				numPositivePics = hevcMaxRefPics
+			}
 			numPics = numNegativePics + numPositivePics
+			if numPics > hevcMaxRefPics {
+				numPics = hevcMaxRefPics
+			}
 			for range numNegativePics {
 				_ = readUE()
 				_ = br.SkipBits(1)
