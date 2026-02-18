@@ -816,17 +816,6 @@ func compareGraphicsStreams(x, y *stream.GraphicsStream) int {
 	if x.LanguageCode() != y.LanguageCode() {
 		return strings.Compare(x.LanguageName, y.LanguageName)
 	}
-	// Match observed official BDInfo ordering: when multiple English PGS streams exist,
-	// prefer higher PIDs first (typically forced/secondary subs).
-	if xEng && yEng {
-		if x.PID > y.PID {
-			return -1
-		}
-		if y.PID > x.PID {
-			return 1
-		}
-		return 0
-	}
 	if x.PID > y.PID {
 		return 1
 	}
