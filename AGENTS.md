@@ -301,6 +301,16 @@ BDINFO_OFFICIAL_REPORT=/tmp/bdinfo-parity/official.txt \
 go test ./internal/parity -run TestParity_OfficialBDInfo_ReportText -count=1
 ```
 
+## Fuzzing (Go Native)
+Go fuzz targets live in `*_fuzz_test.go` and only run when invoked with `-fuzz=...`.
+
+Examples:
+```sh
+go test ./internal/bdrom -run=^$ -fuzz=FuzzStreamClipFileScan -fuzztime=30s
+go test ./internal/buffer -run=^$ -fuzz=FuzzBitReader -fuzztime=30s
+go test ./internal/codec -run=^$ -fuzz=FuzzHEVCFrameTagFromTransfer -fuzztime=30s
+```
+
 ## C# Source Reference Structure
 Repo: `~/github/oss/BDInfo-src/`
 - `BDInfo.Core/BDCommon/rom/`: Core parsing logic
