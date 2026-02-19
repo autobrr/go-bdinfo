@@ -749,10 +749,10 @@ func compareAudioStreams(x, y *stream.AudioStream) int {
 		return 1
 	}
 	if x.LanguageCode() == "eng" && y.LanguageCode() == "eng" {
-		if x.PID > y.PID {
+		if x.PID < y.PID {
 			return -1
 		}
-		if y.PID > x.PID {
+		if y.PID < x.PID {
 			return 1
 		}
 		return 0
@@ -819,10 +819,10 @@ func compareGraphicsStreams(x, y *stream.GraphicsStream) int {
 		return 1
 	}
 	if x.LanguageCode() == "eng" && y.LanguageCode() == "eng" {
-		if x.PID > y.PID {
+		if x.PID < y.PID {
 			return -1
 		}
-		if y.PID > x.PID {
+		if y.PID < x.PID {
 			return 1
 		}
 		return 0
@@ -856,10 +856,10 @@ func compareTextStreams(x, y *stream.TextStream) int {
 		return 1
 	}
 	if x.LanguageCode() == "eng" && y.LanguageCode() == "eng" {
-		if x.PID > y.PID {
+		if x.PID < y.PID {
 			return -1
 		}
-		if y.PID > x.PID {
+		if y.PID < x.PID {
 			return 1
 		}
 		return 0

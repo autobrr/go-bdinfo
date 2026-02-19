@@ -32,6 +32,7 @@ Notes:
 - Diagnostics parity loop: derive stream diagnostics order from PMT stream order probe (`detectPMTStreamOrder`) with scan/CLPI fallback; verify on both anchors:
   - Network UHD (`00007/00009` hidden DV ordering)
   - Excalibur UHD (`00004` DV + audio/PGS ordering)
+- Playlist same-language ordering parity: for English audio/graphics/text streams of same type, keep PID ascending (regression anchor: `The.Man.Who.Wasnt.There...`, 39.435 kbps subtitle before 68.796 kbps).
 - Perf hotspot loop: if Network-like discs regress, check `internal/bdrom/streamfile.go` clip-target matching path first (active target cursor), then re-run harness.
 - Sample cadence: smoke with `--reps 1` on ISO + Static + Network, then `--reps 3` on the regressing sample.
 - Debug helper: `go run ./cmd/debugudf -iso "<path>.iso"` (lists key dirs/files, sanity-checks headers/sizes).
