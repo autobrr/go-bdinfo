@@ -382,62 +382,101 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 					clipName = fmt.Sprintf("%s (%d)", clipName, clip.AngleIndex)
 				}
 
-				// Match official BDInfo: order rows by stream kind (video, audio, graphics, text) then PID.
-				// Do not use playlist.SortedStreams here; BDInfo's diagnostics ordering differs from its stream listing sort.
+				// Match official BDInfo: diagnostics iterate stream dictionary values in insertion order.
+				// StreamOrder mirrors CLPI insertion order; fallback keeps deterministic grouped ordering.
 				pids := make([]uint16, 0, len(clip.StreamFile.Streams))
-				for pid, clipStream := range clip.StreamFile.Streams {
-					if clipStream == nil {
-						continue
+				if len(clip.StreamFile.StreamOrder) > 0 {
+					for _, pid := range clip.StreamFile.StreamOrder {
+						clipStream := clip.StreamFile.Streams[pid]
+						if clipStream == nil {
+							continue
+						}
+						if _, ok := playlist.Streams[pid]; !ok {
+							continue
+						}
+						pids = append(pids, pid)
 					}
-					if _, ok := playlist.Streams[pid]; !ok {
-						continue
+				} else {
+					for pid, clipStream := range clip.StreamFile.Streams {
+						if clipStream == nil {
+							continue
+						}
+						if _, ok := playlist.Streams[pid]; !ok {
+							continue
+						}
+						pids = append(pids, pid)
 					}
-					pids = append(pids, pid)
+					sort.Slice(pids, func(i, j int) bool {
+						a := clip.StreamFile.Streams[pids[i]]
+						bs := clip.StreamFile.Streams[pids[j]]
+						kind := func(info stream.Info) int {
+							if info == nil {
+								return 9
+							}
+							base := info.Base()
+							switch {
+							case base.IsVideoStream():
+								return 0
+							case base.IsAudioStream():
+								return 1
+							case base.IsGraphicsStream():
+								return 2
+							case base.IsTextStream():
+								return 3
+							default:
+								return 4
+							}
+						}
+						ka := kind(a)
+						kb := kind(bs)
+						if ka != kb {
+							return ka < kb
+						}
+						return pids[i] < pids[j]
+					})
 				}
-				sort.Slice(pids, func(i, j int) bool {
-					a := clip.StreamFile.Streams[pids[i]]
-					bs := clip.StreamFile.Streams[pids[j]]
-					hidden := func(pid uint16, info stream.Info) bool {
-						if playlistInfo := playlist.Streams[pid]; playlistInfo != nil {
-							return playlistInfo.Base().IsHidden
+				hasHiddenVideo := false
+				for _, pid := range pids {
+					playlistStream := playlist.Streams[pid]
+					if playlistStream == nil {
+						continue
+					}
+					base := playlistStream.Base()
+					if base.IsVideoStream() && base.IsHidden {
+						hasHiddenVideo = true
+						break
+					}
+				}
+				if !hasHiddenVideo {
+					sort.SliceStable(pids, func(i, j int) bool {
+						a := clip.StreamFile.Streams[pids[i]]
+						bs := clip.StreamFile.Streams[pids[j]]
+						kind := func(info stream.Info) int {
+							if info == nil {
+								return 9
+							}
+							base := info.Base()
+							switch {
+							case base.IsVideoStream():
+								return 0
+							case base.IsAudioStream():
+								return 1
+							case base.IsGraphicsStream():
+								return 2
+							case base.IsTextStream():
+								return 3
+							default:
+								return 4
+							}
 						}
-						return info != nil && info.Base().IsHidden
-					}
-					kind := func(info stream.Info) int {
-						if info == nil {
-							return 9
+						ka := kind(a)
+						kb := kind(bs)
+						if ka != kb {
+							return ka < kb
 						}
-						base := info.Base()
-						switch {
-						case base.IsVideoStream():
-							return 0
-						case base.IsAudioStream():
-							return 1
-						case base.IsGraphicsStream():
-							return 2
-						case base.IsTextStream():
-							return 3
-						default:
-							return 4
-						}
-					}
-					ka := kind(a)
-					kb := kind(bs)
-					ha := hidden(pids[i], a)
-					hb := hidden(pids[j], bs)
-					if ha && ka == 0 {
-						// Match BDInfo behavior observed on UHD Dolby Vision enhancement streams:
-						// hidden video streams are listed after non-hidden streams.
-						ka = 5
-					}
-					if hb && kb == 0 {
-						kb = 5
-					}
-					if ka != kb {
-						return ka < kb
-					}
-					return pids[i] < pids[j]
-				})
+						return pids[i] < pids[j]
+					})
+				}
 
 				for _, pid := range pids {
 					clipStream := clip.StreamFile.Streams[pid]

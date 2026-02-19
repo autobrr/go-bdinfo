@@ -55,6 +55,109 @@ func putCodecBuffer(buf []byte) {
 	}
 }
 
+type psiAssembler struct {
+	active bool
+	needed int
+	buf    []byte
+}
+
+func (a *psiAssembler) appendPayload(payload []byte, payloadStart bool) ([]byte, bool) {
+	if payloadStart {
+		if len(payload) == 0 {
+			return nil, false
+		}
+		pointer := int(payload[0])
+		start := 1 + pointer
+		if start > len(payload) {
+			return nil, false
+		}
+		a.buf = append(a.buf[:0], payload[start:]...)
+		a.needed = 0
+		a.active = true
+	} else {
+		if !a.active || len(payload) == 0 {
+			return nil, false
+		}
+		a.buf = append(a.buf, payload...)
+	}
+	if len(a.buf) >= 3 && a.needed == 0 {
+		sectionLen := int(a.buf[1]&0x0F)<<8 | int(a.buf[2])
+		a.needed = 3 + sectionLen
+	}
+	if a.needed > 0 && len(a.buf) >= a.needed {
+		section := make([]byte, a.needed)
+		copy(section, a.buf[:a.needed])
+		a.active = false
+		a.buf = a.buf[:0]
+		a.needed = 0
+		return section, true
+	}
+	return nil, false
+}
+
+func parsePATPMTPIDSection(section []byte) (uint16, bool) {
+	if len(section) < 12 {
+		return 0, false
+	}
+	if section[0] != 0x00 {
+		return 0, false
+	}
+	sectionLen := int(section[1]&0x0F)<<8 | int(section[2])
+	total := 3 + sectionLen
+	if total > len(section) || total < 12 {
+		return 0, false
+	}
+	end := total - 4 // exclude CRC32
+	var fallbackPMTPID uint16
+	hasFallback := false
+	for i := 8; i+4 <= end; i += 4 {
+		program := uint16(section[i])<<8 | uint16(section[i+1])
+		pmtPID := uint16(section[i+2]&0x1F)<<8 | uint16(section[i+3])
+		if program == 1 {
+			return pmtPID, true
+		}
+		if program != 0 && !hasFallback {
+			fallbackPMTPID = pmtPID
+			hasFallback = true
+		}
+	}
+	if hasFallback {
+		return fallbackPMTPID, true
+	}
+	return 0, false
+}
+
+func parsePMTStreamOrderSection(section []byte) ([]uint16, bool) {
+	if len(section) < 16 {
+		return nil, false
+	}
+	if section[0] != 0x02 {
+		return nil, false
+	}
+	sectionLen := int(section[1]&0x0F)<<8 | int(section[2])
+	total := 3 + sectionLen
+	if total > len(section) || total < 16 {
+		return nil, false
+	}
+	programInfoLen := int(section[10]&0x0F)<<8 | int(section[11])
+	idx := 12 + programInfoLen
+	end := total - 4 // exclude CRC32
+	if idx > end {
+		return nil, false
+	}
+	order := make([]uint16, 0, 8)
+	for idx+5 <= end {
+		pid := uint16(section[idx+1]&0x1F)<<8 | uint16(section[idx+2])
+		esInfoLen := int(section[idx+3]&0x0F)<<8 | int(section[idx+4])
+		order = append(order, pid)
+		idx += 5 + esInfoLen
+	}
+	if len(order) == 0 {
+		return nil, false
+	}
+	return order, true
+}
+
 type InterleavedFile struct {
 	FileInfo fs.FileInfo
 	Name     string
@@ -70,12 +173,14 @@ type StreamDiagnostics struct {
 }
 
 type StreamFile struct {
-	FileInfo          fs.FileInfo
-	Name              string
-	Size              int64
-	Length            float64
-	InterleavedFile   *InterleavedFile
-	Streams           map[uint16]stream.Info
+	FileInfo        fs.FileInfo
+	Name            string
+	Size            int64
+	Length          float64
+	InterleavedFile *InterleavedFile
+	Streams         map[uint16]stream.Info
+	// StreamOrder preserves stream insertion order for diagnostics parity.
+	StreamOrder       []uint16
 	StreamDiagnostics map[uint16][]StreamDiagnostics
 }
 
@@ -275,10 +380,24 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 		for _, pl := range playlists {
 			for _, clip := range pl.StreamClips {
 				if clip.StreamFile == s && clip.StreamClipFile != nil {
-					for pid, st := range clip.StreamClipFile.Streams {
-						if _, ok := s.Streams[pid]; !ok {
-							s.Streams[pid] = st.Clone()
+					pids := clip.StreamClipFile.StreamOrder
+					if len(pids) == 0 {
+						pids = make([]uint16, 0, len(clip.StreamClipFile.Streams))
+						for pid := range clip.StreamClipFile.Streams {
+							pids = append(pids, pid)
 						}
+						sort.Slice(pids, func(i, j int) bool { return pids[i] < pids[j] })
+					}
+					for _, pid := range pids {
+						st, ok := clip.StreamClipFile.Streams[pid]
+						if !ok || st == nil {
+							continue
+						}
+						if _, exists := s.Streams[pid]; exists {
+							continue
+						}
+						s.Streams[pid] = st.Clone()
+						s.StreamOrder = append(s.StreamOrder, pid)
 					}
 				}
 			}
@@ -356,6 +475,12 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 		}
 	}
 	var unknownState *streamState
+	seenStreamOrder := make(map[uint16]struct{}, len(s.Streams))
+	scanStreamOrder := make([]uint16, 0, len(s.Streams))
+	pmtPID := uint16(0xFFFF)
+	var pmtStreamOrder []uint16
+	var patAssembler psiAssembler
+	var pmtAssembler psiAssembler
 	defer func() {
 		for _, state := range states {
 			if state == nil || state.codecData == nil {
@@ -391,6 +516,12 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 			state = unknownState
 		}
 		known := st != nil
+		if known {
+			if _, ok := seenStreamOrder[pid]; !ok {
+				seenStreamOrder[pid] = struct{}{}
+				scanStreamOrder = append(scanStreamOrder, pid)
+			}
+		}
 		isVideo := st != nil && st.Base().IsVideoStream()
 
 		payloadStart := (pkt[syncOffset+1] & 0x40) != 0
@@ -416,6 +547,33 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 		payload := pkt[idx:]
 		if len(payload) == 0 {
 			return
+		}
+		if payloadStart {
+			if pid == 0 {
+				if section, ok := patAssembler.appendPayload(payload, true); ok {
+					if discoveredPMTPID, ok := parsePATPMTPIDSection(section); ok {
+						pmtPID = discoveredPMTPID
+					}
+				}
+			} else if pid == pmtPID && len(pmtStreamOrder) == 0 {
+				if section, ok := pmtAssembler.appendPayload(payload, true); ok {
+					if order, ok := parsePMTStreamOrderSection(section); ok {
+						pmtStreamOrder = order
+					}
+				}
+			}
+		} else if pid == 0 {
+			if section, ok := patAssembler.appendPayload(payload, false); ok {
+				if discoveredPMTPID, ok := parsePATPMTPIDSection(section); ok {
+					pmtPID = discoveredPMTPID
+				}
+			}
+		} else if pid == pmtPID && len(pmtStreamOrder) == 0 {
+			if section, ok := pmtAssembler.appendPayload(payload, false); ok {
+				if order, ok := parsePMTStreamOrderSection(section); ok {
+					pmtStreamOrder = order
+				}
+			}
 		}
 		// Payload unit start is a hint; validate PES start code to avoid false starts (BDInfo scans for 0x000001).
 		isPESStart := payloadStart && len(payload) >= 4 && payload[0] == 0x00 && payload[1] == 0x00 && payload[2] == 0x01
@@ -755,6 +913,36 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	}
 
 	s.finalizePlaylistVBR(playlists)
+	if len(pmtStreamOrder) > 0 || len(scanStreamOrder) > 0 {
+		s.StreamOrder = s.StreamOrder[:0]
+		seen := make(map[uint16]struct{}, len(s.Streams))
+		appendIfKnown := func(pid uint16) {
+			if _, ok := s.Streams[pid]; !ok {
+				return
+			}
+			if _, ok := seen[pid]; ok {
+				return
+			}
+			seen[pid] = struct{}{}
+			s.StreamOrder = append(s.StreamOrder, pid)
+		}
+		for _, pid := range pmtStreamOrder {
+			appendIfKnown(pid)
+		}
+		for _, pid := range scanStreamOrder {
+			appendIfKnown(pid)
+		}
+		if len(s.StreamOrder) < len(s.Streams) {
+			remaining := make([]uint16, 0, len(s.Streams)-len(s.StreamOrder))
+			for pid := range s.Streams {
+				if _, ok := seen[pid]; !ok {
+					remaining = append(remaining, pid)
+				}
+			}
+			sort.Slice(remaining, func(i, j int) bool { return remaining[i] < remaining[j] })
+			s.StreamOrder = append(s.StreamOrder, remaining...)
+		}
+	}
 
 	return nil
 }

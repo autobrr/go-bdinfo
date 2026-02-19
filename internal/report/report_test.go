@@ -73,6 +73,7 @@ func TestWriteReport_StreamDiagnosticsHiddenStreamsLast(t *testing.T) {
 			0x1100: audio,
 			0x12A0: graphics,
 		},
+		StreamOrder: []uint16{0x1011, 0x1100, 0x12A0, 0x1015},
 	}
 	playlist := &bdrom.PlaylistFile{
 		Name:            "00001.MPLS",
