@@ -246,7 +246,9 @@ func buildStreamPlaylistIndex(playlists []*PlaylistFile) map[*StreamFile][]*Play
 
 func New(path string, settings settings.Settings) (*BDROM, error) {
 	rootPath := path
-	cleanup := func() {}
+	cleanup := func() {
+		// No cleanup needed for regular directory access
+	}
 	fileSystem := fs.NewDiskFileSystem()
 	volumeLabel := ""
 
@@ -372,13 +374,11 @@ func New(path string, settings settings.Settings) (*BDROM, error) {
 	rom.DiscTitle = readDiscTitleFS(rom.metaDirectory)
 
 	if rom.playlistDirectory != nil {
-		if files, err := rom.playlistDirectory.GetFilesPattern("*.mpls"); err == nil && len(files) > 0 {
-			for _, file := range files {
-				pl := NewPlaylistFile(file, settings)
-				rom.PlaylistFiles[pl.Name] = pl
-				rom.PlaylistOrder = append(rom.PlaylistOrder, pl.Name)
-			}
-		} else if files, err := rom.playlistDirectory.GetFilesPattern("*.MPLS"); err == nil {
+		files, err := rom.playlistDirectory.GetFilesPattern("*.mpls")
+		if err != nil || len(files) == 0 {
+			files, err = rom.playlistDirectory.GetFilesPattern("*.MPLS")
+		}
+		if err == nil {
 			for _, file := range files {
 				pl := NewPlaylistFile(file, settings)
 				rom.PlaylistFiles[pl.Name] = pl
@@ -388,12 +388,11 @@ func New(path string, settings settings.Settings) (*BDROM, error) {
 	}
 
 	if rom.streamDirectory != nil {
-		if files, err := rom.streamDirectory.GetFilesPattern("*.m2ts"); err == nil && len(files) > 0 {
-			for _, file := range files {
-				sf := NewStreamFile(file)
-				rom.StreamFiles[sf.Name] = sf
-			}
-		} else if files, err := rom.streamDirectory.GetFilesPattern("*.M2TS"); err == nil {
+		files, err := rom.streamDirectory.GetFilesPattern("*.m2ts")
+		if err != nil || len(files) == 0 {
+			files, err = rom.streamDirectory.GetFilesPattern("*.M2TS")
+		}
+		if err == nil {
 			for _, file := range files {
 				sf := NewStreamFile(file)
 				rom.StreamFiles[sf.Name] = sf
@@ -402,12 +401,11 @@ func New(path string, settings settings.Settings) (*BDROM, error) {
 	}
 
 	if rom.clipinfDirectory != nil {
-		if files, err := rom.clipinfDirectory.GetFilesPattern("*.clpi"); err == nil && len(files) > 0 {
-			for _, file := range files {
-				cf := NewStreamClipFile(file)
-				rom.StreamClipFiles[cf.Name] = cf
-			}
-		} else if files, err := rom.clipinfDirectory.GetFilesPattern("*.CLPI"); err == nil {
+		files, err := rom.clipinfDirectory.GetFilesPattern("*.clpi")
+		if err != nil || len(files) == 0 {
+			files, err = rom.clipinfDirectory.GetFilesPattern("*.CLPI")
+		}
+		if err == nil {
 			for _, file := range files {
 				cf := NewStreamClipFile(file)
 				rom.StreamClipFiles[cf.Name] = cf
@@ -416,11 +414,11 @@ func New(path string, settings settings.Settings) (*BDROM, error) {
 	}
 
 	if rom.ssifDirectory != nil {
-		if files, err := rom.ssifDirectory.GetFilesPattern("*.ssif"); err == nil && len(files) > 0 {
-			for _, file := range files {
-				rom.InterleavedFiles[strings.ToUpper(file.Name())] = &InterleavedFile{FileInfo: file, Name: strings.ToUpper(file.Name()), Size: file.Length()}
-			}
-		} else if files, err := rom.ssifDirectory.GetFilesPattern("*.SSIF"); err == nil {
+		files, err := rom.ssifDirectory.GetFilesPattern("*.ssif")
+		if err != nil || len(files) == 0 {
+			files, err = rom.ssifDirectory.GetFilesPattern("*.SSIF")
+		}
+		if err == nil {
 			for _, file := range files {
 				rom.InterleavedFiles[strings.ToUpper(file.Name())] = &InterleavedFile{FileInfo: file, Name: strings.ToUpper(file.Name()), Size: file.Length()}
 			}
@@ -500,10 +498,8 @@ func (b *BDROM) Scan() ScanResult {
 				b.Is50Hz = true
 			}
 			if vidCount > 1 && b.Is3D {
-				if vs.StreamType == stream.StreamTypeAVCVideo && playlist.MVCBaseViewR {
-					base := true
-					vs.BaseView = &base
-				} else if vs.StreamType == stream.StreamTypeMVCVideo && !playlist.MVCBaseViewR {
+				if (vs.StreamType == stream.StreamTypeAVCVideo && playlist.MVCBaseViewR) ||
+					(vs.StreamType == stream.StreamTypeMVCVideo && !playlist.MVCBaseViewR) {
 					base := true
 					vs.BaseView = &base
 				} else if vs.StreamType == stream.StreamTypeAVCVideo || vs.StreamType == stream.StreamTypeMVCVideo {

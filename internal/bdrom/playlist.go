@@ -652,14 +652,11 @@ func createPlaylistStream(data []byte, pos *int) stream.Info {
 	switch headerType {
 	case 1:
 		pid = int(util.ReadUint16(data, pos))
-	case 2:
+	case 2, 4:
 		*pos += 2
 		pid = int(util.ReadUint16(data, pos))
 	case 3:
 		*pos += 1
-		pid = int(util.ReadUint16(data, pos))
-	case 4:
-		*pos += 2
 		pid = int(util.ReadUint16(data, pos))
 	default:
 		pid = int(util.ReadUint16(data, pos))
