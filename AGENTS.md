@@ -3,7 +3,41 @@
 ## Overview
 This project is a Go implementation of BDInfo, a tool for analyzing Blu-ray disc structures. The original is written in C# and we're creating a pure Go version without CGO dependencies.
 
-**IMPORTANT**: Always refer to the original C# source code in the `BDInfo-master/` directory for implementation guidance. The C# code serves as the authoritative reference for:
+**IMPORTANT**: Always refer to the original C# source code for implementation guidance. Workspace convention:
+- C# reference source: `~/github/oss/BDInfo-src/BDInfo.Core/BDCommon/rom/` (clone UniqProject/BDInfo if missing)
+
+## Parity Loop (Official BDInfo)
+Loop-to-done: generate official report + our report for the same disc path (folder or ISO), `diff -u --text`, fix mismatches, add regression tests.
+
+Commands:
+```bash
+off=~/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo
+disc="/mnt/storage/torrents/<disc-folder-or-iso>"
+out=/tmp/bdinfo-parity
+mkdir -p "$out"
+
+"$off" -p "$disc" -o "$out/official.txt"
+go build -o /tmp/bdinfo ./cmd/bdinfo
+/tmp/bdinfo -p "$disc" -o "$out/ours.txt"
+
+diff -u --text "$out/official.txt" "$out/ours.txt"
+```
+
+Notes:
+- IO: don’t sweep all of `/mnt/storage/torrents*`; sample a few discs per type.
+- ISO/UDF: BD-ROM ISOs commonly use a metadata partition map and multi-extent files; UDF reads must be concurrency-safe (use `ReadAt`-based access, no shared `Seek`).
+- Speed loop: always measure official vs ours on the same sample path and compare wall time with exact command logs.
+- Current perf policy: stream scans default to 1 worker (override with `BDINFO_WORKERS`) to avoid seek thrash on this storage profile.
+- Harness: `scripts/speed_parity_loop.sh --disc "<disc-or-iso>" --reps 3` (matched toggles, per-rep parity check, median ratio).
+- Diagnostics parity loop: derive stream diagnostics order from PMT stream order probe (`detectPMTStreamOrder`) with scan/CLPI fallback; verify on both anchors:
+  - Network UHD (`00007/00009` hidden DV ordering)
+  - Excalibur UHD (`00004` DV + audio/PGS ordering)
+- Playlist same-language ordering parity: for English audio/graphics/text streams of same type, keep PID ascending (regression anchor: `The.Man.Who.Wasnt.There...`, 39.435 kbps subtitle before 68.796 kbps).
+- Perf hotspot loop: if Network-like discs regress, check `internal/bdrom/streamfile.go` clip-target matching path first (active target cursor), then re-run harness.
+- Sample cadence: smoke with `--reps 1` on ISO + Static + Network, then `--reps 3` on the regressing sample.
+- Debug helper: `go run ./cmd/debugudf -iso "<path>.iso"` (lists key dirs/files, sanity-checks headers/sizes).
+
+The C# code serves as the authoritative reference for:
 - Binary format specifications
 - Parsing algorithms
 - Codec analysis logic
@@ -244,22 +278,76 @@ See [plan.md](plan.md) for detailed implementation plan and remaining work.
 - Patent-free codec documentation
 
 ## Development Workflow
-1. Always check original C# implementation in `BDInfo-master/`
+1. Always check original C# implementation in `~/github/oss/BDInfo-src/BDInfo.Core/BDCommon/rom/`
 2. Write tests before implementation
 3. Use standard Go conventions
 4. Document codec-specific quirks
 5. Maintain compatibility with original output formats
 6. **Debug Tools**: Name temporary debug commands with prefixes like `test`, `debug`, or `check` (e.g., `cmd/teststream/`, `cmd/debugfids/`) so they can be easily identified and deleted later
 
+## Parity Loop (Official BDInfo)
+Goal: 1:1 parity with official BDInfo report text. Loop-to-done: run parity checks after changes; land regression tests when it fits.
+
+### Official Binary + Source
+- Official Linux BDInfo binary (workspace convention): `~/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo`
+- C# reference source: `~/github/oss/BDInfo-src/BDInfo.Core/BDCommon/rom/`
+
+### Output Quirks To Match (Gotchas)
+- Hidden-tracks note: official inserts `\\n\\r\\n` before `(*) Indicates included stream hidden by this playlist.` when `playlist.HasHiddenTracks` is true. See `internal/report/report.go`.
+- Chapter stats: official `Avg Frame Size` depends on per-transfer `StreamTag` from codec scan; do not default missing tags to `"I"`. Tag parse lives in `internal/bdrom/streamfile.go` (ported from `TSCodecAVC.cs`, `TSCodecMPEG2.cs`, `TSCodecVC1.cs`).
+- Stream Diagnostics timing: official uses `clip.StreamFile.Length` (TSStreamFile.Length), which is DTS-derived and stays `0` unless at least 2 DTS-bearing timestamps are observed. Do not seed `StreamFile.Length` from playlist clip length (tiny/partial captures differ). See `internal/bdrom/streamfile.go`.
+- HEVC chapter stats: official HEVC tag selection depends on init state and transfer size.
+  - Uninitialized: keep scanning; last slice overwrites earlier tags (can become null). Buffer cap is effectively 5MB (`TSStreamBuffer`).
+  - Initialized: stop at first non-null tag.
+  - Go impl: `internal/codec/hevc_tag.go` + `internal/bdrom/streamfile.go` (5MB pre-init buffer, shrink after SPS). Test: `internal/codec/hevc_tag_test.go`.
+
+### Quick Manual Parity Check (Report Text)
+Sample disc (avoid full dataset sweeps; pick 1-2 discs): `/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT`
+
+Generate official + ours and diff:
+```sh
+disc=/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT
+off=~/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo
+
+$off -p "$disc" -o /tmp/bdinfo-parity/official.txt
+go run ./cmd/bdinfo -p "$disc" -o /tmp/bdinfo-parity/ours.txt
+diff -u /tmp/bdinfo-parity/official.txt /tmp/bdinfo-parity/ours.txt
+```
+
+### Slow Oracle Test (Fuzzy Normalized)
+Test: `internal/parity/bdinfo_parity_test.go` (gated; normalizes line endings/trailing whitespace).
+It forces both official + go-bdinfo to `internal/settings.Default(...)` toggles for stable comparisons.
+
+Env vars:
+- `BDINFO_PARITY=1` enable
+- `BDINFO_PARITY_DISC=/path/to/disc`
+- `BDINFO_OFFICIAL_BIN=/path/to/official/BDInfo` (optional)
+- `BDINFO_OFFICIAL_REPORT=/path/to/official.txt` (optional; skips running official binary)
+
+Run:
+```sh
+BDINFO_PARITY=1 \
+BDINFO_PARITY_DISC=/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT \
+BDINFO_OFFICIAL_REPORT=/tmp/bdinfo-parity/official.txt \
+go test ./internal/parity -run TestParity_OfficialBDInfo_ReportText -count=1
+```
+
+## Fuzzing (Go Native)
+Go fuzz targets live in `*_fuzz_test.go` and only run when invoked with `-fuzz=...`.
+
+Examples:
+```sh
+go test ./internal/bdrom -run=^$ -fuzz=FuzzStreamClipFileScan -fuzztime=30s
+go test ./internal/buffer -run=^$ -fuzz=FuzzBitReader -fuzztime=30s
+go test ./internal/codec -run=^$ -fuzz=FuzzHEVCFrameTagFromTransfer -fuzztime=30s
+```
+
 ## C# Source Reference Structure
-The `BDInfo-master/` directory contains:
-- `BDCommon/rom/`: Core parsing logic
-  - `TSCodec*.cs`: Codec analyzers (AC3, DTS, AVC, HEVC, etc.)
+Repo: `~/github/oss/BDInfo-src/`
+- `BDInfo.Core/BDCommon/rom/`: Core parsing logic
+  - `TSCodec*.cs`: Codec analyzers (AC3, DTS, AVC, HEVC, MPEG2, VC-1, etc.)
   - `TSStreamFile.cs`: Transport stream parser
   - `TSPlaylistFile.cs`: MPLS playlist parser
   - `TSStreamClipFile.cs`: CLPI clip info parser
   - `BDROM.cs`: Main disc structure
   - `LanguageCodes.cs`: ISO 639-2 language mappings
-- `BDCommon/IO/`: File system abstractions
-- `BDExtractor/`: ISO extraction tool
-- `BDInfo/`: Main CLI application

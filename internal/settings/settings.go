@@ -7,6 +7,7 @@ type Settings struct {
 	GenerateStreamDiagnostics bool
 	ExtendedStreamDiagnostics bool
 	EnableSSIF                bool
+	BigPlaylistOnly           bool
 	FilterLoopingPlaylists    bool
 	FilterShortPlaylists      bool
 	FilterShortPlaylistsVal   int
@@ -22,16 +23,17 @@ type Settings struct {
 
 func Default(reportBaseDir string) Settings {
 	return Settings{
-		GenerateStreamDiagnostics: false,
+		GenerateStreamDiagnostics: true,
 		ExtendedStreamDiagnostics: false,
 		EnableSSIF:                true,
+		BigPlaylistOnly:           false,
 		FilterLoopingPlaylists:    false,
 		FilterShortPlaylists:      true,
 		FilterShortPlaylistsVal:   20,
 		KeepStreamOrder:           false,
 		GenerateTextSummary:       true,
 		ReportFileName:            filepath.Join(reportBaseDir, "BDInfo_{0}.bdinfo"),
-		IncludeVersionAndNotes:    true,
+		IncludeVersionAndNotes:    false,
 		GroupByTime:               false,
 		ForumsOnly:                false,
 		MainPlaylistOnly:          false,

@@ -15,6 +15,8 @@ type StreamClipFile struct {
 	FileType string
 	IsValid  bool
 	Streams  map[uint16]stream.Info
+	// StreamOrder preserves CLPI stream table order for parity with official BDInfo.
+	StreamOrder []uint16
 }
 
 func NewStreamClipFile(fileInfo fs.FileInfo) *StreamClipFile {
@@ -78,6 +80,9 @@ func (s *StreamClipFile) Scan() error {
 		var st stream.Info
 		switch streamType {
 		case stream.StreamTypeHEVCVideo, stream.StreamTypeAVCVideo, stream.StreamTypeMPEG1Video, stream.StreamTypeMPEG2Video, stream.StreamTypeVC1Video:
+			if offset+4 > len(clipData) {
+				break
+			}
 			videoFormat := stream.VideoFormat(clipData[offset+2] >> 4)
 			frameRate := stream.FrameRate(clipData[offset+2] & 0x0F)
 			aspectRatio := stream.AspectRatio(clipData[offset+3] >> 4)
@@ -128,6 +133,9 @@ func (s *StreamClipFile) Scan() error {
 		if st != nil {
 			st.Base().PID = pid
 			st.Base().StreamType = streamType
+			if _, exists := s.Streams[pid]; !exists {
+				s.StreamOrder = append(s.StreamOrder, pid)
+			}
 			s.Streams[pid] = st
 		}
 		if offset >= len(clipData) {

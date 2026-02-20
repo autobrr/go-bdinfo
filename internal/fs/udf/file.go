@@ -7,8 +7,26 @@ import (
 	"io"
 	"path"
 	"strings"
+	"sync"
 	"time"
 )
+
+func (r *Reader) readFullAt(off int64, p []byte) error {
+	sr := io.NewSectionReader(r.file, off, int64(len(p)))
+	_, err := io.ReadFull(sr, p)
+	return err
+}
+
+func (r *Reader) readBlock(block uint32) ([]byte, error) {
+	if r.blockSize == 0 {
+		return nil, fmt.Errorf("udf: block size not set")
+	}
+	b := make([]byte, r.blockSize)
+	if err := r.readFullAt(int64(block)*int64(r.blockSize), b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
 
 // File represents a file in the UDF file system
 type File struct {
@@ -29,6 +47,16 @@ type Directory struct {
 	path    string
 	icb     LongAD
 	entries []*FileIdentifierDescriptor
+
+	entriesOnce sync.Once
+	entriesErr  error
+}
+
+func (d *Directory) ensureEntries() error {
+	d.entriesOnce.Do(func() {
+		d.entriesErr = d.readEntries()
+	})
+	return d.entriesErr
 }
 
 // Size returns the file size in bytes.
@@ -120,14 +148,14 @@ type ExtendedFileEntry struct {
 
 // ICBTag represents Information Control Block tag
 type ICBTag struct {
-	PriorRecordedNumberOfDirectEntries uint32   // 0-3
-	StrategyType                       uint16   // 4-5
-	StrategyParameter                  [2]byte  // 6-7
-	MaximumNumberOfEntries             uint16   // 8-9
-	Reserved                           byte     // 10
-	FileType                           uint8    // 11
-	ParentICBLocation                  ExtentAD // 12-19 (8 bytes)
-	Flags                              uint16   // 20-21 (not 18!)
+	PriorRecordedNumberOfDirectEntries uint32  // 0-3
+	StrategyType                       uint16  // 4-5
+	StrategyParameter                  [2]byte // 6-7
+	MaximumNumberOfEntries             uint16  // 8-9
+	Reserved                           byte    // 10
+	FileType                           uint8   // 11
+	ParentICBLocation                  LBAddr  // 12-17 (6 bytes)
+	Flags                              uint16  // 18-19
 }
 
 // FileIdentifierDescriptor represents a file identifier
@@ -159,7 +187,7 @@ func (r *Reader) ReadDirectory(dirPath string) (*Directory, error) {
 			icb:    r.rootICB,
 		}
 
-		if err := dir.readEntries(); err != nil {
+		if err := dir.ensureEntries(); err != nil {
 			return nil, err
 		}
 
@@ -186,7 +214,7 @@ func (r *Reader) ReadDirectory(dirPath string) (*Directory, error) {
 		found := false
 		for _, dir := range dirs {
 			if strings.EqualFold(dir.Name, part) {
-				if err := dir.readEntries(); err != nil {
+				if err := dir.ensureEntries(); err != nil {
 					return nil, err
 				}
 				currentDir = dir
@@ -204,17 +232,8 @@ func (r *Reader) ReadDirectory(dirPath string) (*Directory, error) {
 
 // readEntries reads all entries in a directory
 func (d *Directory) readEntries() error {
-	// Special case for root directory in Blu-ray discs
-	if d.path == "/" && d.reader.fileSetDesc != nil {
-		// Try to find directory data near the FileSet descriptor
-		if err := d.tryReadBlurayRootDirectory(); err == nil {
-			return nil // Successfully read using Blu-ray layout
-		}
-		// If that fails, fall back to standard approach
-	}
-
 	// Read the directory's file entry
-	fileEntry, err := d.reader.readFileEntry(d.icb)
+	fileEntry, fileEntryData, err := d.reader.readFileEntryWithData(d.icb)
 	if err != nil {
 		return err
 	}
@@ -258,13 +277,12 @@ func (d *Directory) readEntries() error {
 			baseSize = 216
 		}
 
-		// Seek to embedded data location
-		currentPos, _ := d.reader.file.Seek(0, io.SeekCurrent)
-		d.reader.file.Seek(currentPos-baseSize+int64(extAttribLength), io.SeekStart)
-
-		// Read embedded data
-		embeddedData := make([]byte, allocDescLength)
-		d.reader.file.Read(embeddedData)
+		embeddedOffset := baseSize + int64(extAttribLength)
+		embeddedEnd := embeddedOffset + int64(allocDescLength)
+		if embeddedOffset < 0 || embeddedEnd > int64(len(fileEntryData)) {
+			return fmt.Errorf("embedded directory data out of range (offset=%d length=%d)", embeddedOffset, allocDescLength)
+		}
+		embeddedData := fileEntryData[embeddedOffset:embeddedEnd]
 
 		// Use a custom method for embedded data
 		if err := d.readEmbeddedDirectoryData(embeddedData); err != nil {
@@ -272,7 +290,7 @@ func (d *Directory) readEntries() error {
 		}
 	} else {
 		// Read allocation descriptors to get data location
-		allocDescs := d.reader.readAllocationDescriptors(fileEntry)
+		allocDescs := d.reader.readAllocationDescriptors(fileEntry, fileEntryData, d.icb.ExtentLocation.PartitionReferenceNumber)
 
 		// Read directory entries
 		for _, ad := range allocDescs {
@@ -285,48 +303,58 @@ func (d *Directory) readEntries() error {
 	return nil
 }
 
-// readFileEntry reads a file entry from an ICB
-func (r *Reader) readFileEntry(icb LongAD) (any, error) {
-	location := icb.ExtentLocation.Location
-	if r.partitionStart > 0 {
-		location = r.partitionStart + icb.ExtentLocation.Location
+type allocationDescriptor struct {
+	// length in bytes (top 2 bits cleared)
+	length uint32
+	lbn    uint32
+	pref   uint16
+}
+
+func (r *Reader) readFileEntryWithData(icb LongAD) (any, []byte, error) {
+	location, err := r.resolveLBAddr(icb.ExtentLocation)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	if _, err := r.file.Seek(int64(location)*int64(r.blockSize), io.SeekStart); err != nil {
-		return nil, err
+	block, err := r.readBlock(location)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	var tag Tag
-	if err := binary.Read(r.file, binary.LittleEndian, &tag); err != nil {
-		return nil, err
+	if err := binary.Read(bytes.NewReader(block[:binary.Size(Tag{})]), binary.LittleEndian, &tag); err != nil {
+		return nil, nil, err
 	}
-
-	r.file.Seek(int64(location)*int64(r.blockSize), io.SeekStart)
 
 	switch tag.TagIdentifier {
 	case TagFile:
 		var fe FileEntry
-		if err := r.readDescriptor(&fe); err != nil {
-			return nil, err
+		if err := binary.Read(bytes.NewReader(block), binary.LittleEndian, &fe); err != nil {
+			return nil, nil, err
 		}
-		return &fe, nil
+		return &fe, block, nil
 
 	case TagExtendedFileEntry:
 		var efe ExtendedFileEntry
-		if err := r.readDescriptor(&efe); err != nil {
-			return nil, err
+		if err := binary.Read(bytes.NewReader(block), binary.LittleEndian, &efe); err != nil {
+			return nil, nil, err
 		}
-		return &efe, nil
+		return &efe, block, nil
 
 	default:
-		return nil, fmt.Errorf("unexpected tag type: %d at location %d", tag.TagIdentifier, location)
+		return nil, nil, fmt.Errorf("unexpected tag type: %d at location %d", tag.TagIdentifier, location)
 	}
 }
 
-// readAllocationDescriptors extracts allocation descriptors from a file entry
-func (r *Reader) readAllocationDescriptors(entry any) []ShortAD {
-	// Simplified - only handles short allocation descriptors
-	// Full implementation would handle all types (short, long, extended)
+// readFileEntry reads a file entry from an ICB.
+func (r *Reader) readFileEntry(icb LongAD) (any, error) {
+	entry, _, err := r.readFileEntryWithData(icb)
+	return entry, err
+}
+
+// readAllocationDescriptors extracts allocation descriptors from a file entry.
+// If the descriptor format doesn't contain a partition reference (short_ad), defaultPref is used.
+func (r *Reader) readAllocationDescriptors(entry any, entryData []byte, defaultPref uint16) []allocationDescriptor {
 
 	var allocDescLength uint32
 	var extAttribLength uint32
@@ -365,8 +393,7 @@ func (r *Reader) readAllocationDescriptors(entry any) []ShortAD {
 	case 0: // Short allocation descriptors (8 bytes each)
 		// Continue with existing code
 	case 1: // Long allocation descriptors (16 bytes each)
-		// TODO: Implement long descriptors
-		return nil
+		// Continue with long AD parsing
 	case 2: // Extended allocation descriptors (20 bytes each)
 		// TODO: Implement extended descriptors
 		return nil
@@ -384,39 +411,63 @@ func (r *Reader) readAllocationDescriptors(entry any) []ShortAD {
 		baseSize = 216 // Size of ExtendedFileEntry up to but not including extended attributes
 	}
 
-	// Seek to allocation descriptors
-	currentPos, _ := r.file.Seek(0, io.SeekCurrent)
-	startOfEntry := currentPos - baseSize
-	allocDescOffset := startOfEntry + baseSize + int64(extAttribLength)
-	r.file.Seek(allocDescOffset, io.SeekStart)
+	allocDescOffset := baseSize + int64(extAttribLength)
+	allocDescEnd := allocDescOffset + int64(allocDescLength)
+	if allocDescOffset < 0 || allocDescEnd > int64(len(entryData)) {
+		return nil
+	}
+	allocData := entryData[allocDescOffset:allocDescEnd]
 
-	// Read short allocation descriptors
-	numDescs := allocDescLength / 8 // Each ShortAD is 8 bytes
-	descs := make([]ShortAD, numDescs)
-
-	for i := range numDescs {
-		if err := binary.Read(r.file, binary.LittleEndian, &descs[i]); err != nil {
-			break
+	switch allocType {
+	case 0:
+		numDescs := allocDescLength / 8
+		descs := make([]allocationDescriptor, 0, numDescs)
+		rd := bytes.NewReader(allocData)
+		for range numDescs {
+			var sad ShortAD
+			if err := binary.Read(rd, binary.LittleEndian, &sad); err != nil {
+				break
+			}
+			descs = append(descs, allocationDescriptor{
+				length: sad.ExtentLength & 0x3FFFFFFF,
+				lbn:    sad.ExtentPosition,
+				pref:   defaultPref,
+			})
 		}
+		return descs
+
+	case 1:
+		numDescs := allocDescLength / 16
+		descs := make([]allocationDescriptor, 0, numDescs)
+		rd := bytes.NewReader(allocData)
+		for range numDescs {
+			var lad LongAD
+			if err := binary.Read(rd, binary.LittleEndian, &lad); err != nil {
+				break
+			}
+			descs = append(descs, allocationDescriptor{
+				length: lad.ExtentLength & 0x3FFFFFFF,
+				lbn:    lad.ExtentLocation.LogicalBlockNumber,
+				pref:   lad.ExtentLocation.PartitionReferenceNumber,
+			})
+		}
+		return descs
 	}
 
-	return descs
+	return nil
 }
 
 // readDirectoryData reads directory entries from an allocation descriptor
-func (d *Directory) readDirectoryData(ad ShortAD) error {
-	// Calculate actual location
-	location := d.reader.partitionStart + ad.ExtentPosition
-	length := ad.ExtentLength & 0x3FFFFFFF // Clear top 2 bits
-
-	// Seek to directory data
-	if _, err := d.reader.file.Seek(int64(location)*int64(d.reader.blockSize), io.SeekStart); err != nil {
+func (d *Directory) readDirectoryData(ad allocationDescriptor) error {
+	location, err := d.reader.resolvePartitionBlock(ad.pref, ad.lbn)
+	if err != nil {
 		return err
 	}
+	length := ad.length
 
 	// Read all directory data
 	data := make([]byte, length)
-	if _, err := d.reader.file.Read(data); err != nil {
+	if err := d.reader.readFullAt(int64(location)*int64(d.reader.blockSize), data); err != nil {
 		return err
 	}
 
@@ -474,6 +525,10 @@ func (d *Directory) readDirectoryData(ad ShortAD) error {
 
 // GetFiles returns all files in the directory
 func (d *Directory) GetFiles() ([]*File, error) {
+	if err := d.ensureEntries(); err != nil {
+		return nil, err
+	}
+
 	var files []*File
 
 	for _, entry := range d.entries {
@@ -495,6 +550,10 @@ func (d *Directory) GetFiles() ([]*File, error) {
 
 // GetDirectories returns all subdirectories
 func (d *Directory) GetDirectories() ([]*Directory, error) {
+	if err := d.ensureEntries(); err != nil {
+		return nil, err
+	}
+
 	var dirs []*Directory
 
 	for _, entry := range d.entries {
@@ -526,27 +585,67 @@ func (d *Directory) getFileName(fid *FileIdentifierDescriptor) string {
 // Open opens the file for reading
 func (f *File) Open() (io.ReadCloser, error) {
 	// Read the file entry
-	entry, err := f.reader.readFileEntry(f.icb)
+	entry, entryData, err := f.reader.readFileEntryWithData(f.icb)
 	if err != nil {
 		return nil, err
 	}
 
+	var infoLen uint64
+	switch e := entry.(type) {
+	case *FileEntry:
+		infoLen = e.InformationLength
+	case *ExtendedFileEntry:
+		infoLen = e.InformationLength
+	}
+
 	// Get allocation descriptors
-	allocDescs := f.reader.readAllocationDescriptors(entry)
+	allocDescs := f.reader.readAllocationDescriptors(entry, entryData, f.icb.ExtentLocation.PartitionReferenceNumber)
 	if len(allocDescs) == 0 {
 		return nil, fmt.Errorf("no allocation descriptors found")
 	}
 
-	// Create a reader for the file data
-	// This is simplified - only handles single extent files
-	ad := allocDescs[0]
-	location := f.reader.partitionStart + ad.ExtentPosition
+	size := int64(infoLen)
+	if size < 0 {
+		size = 0
+	}
 
-	return &fileReader{
-		reader:   f.reader,
-		offset:   int64(location) * int64(f.reader.blockSize),
-		size:     int64(ad.ExtentLength & 0x3FFFFFFF), // Clear top 2 bits
-		position: 0,
+	exts := make([]extent, 0, len(allocDescs))
+	var fileOff int64
+	for _, ad := range allocDescs {
+		if ad.length == 0 {
+			continue
+		}
+		if fileOff >= size {
+			break
+		}
+		loc, err := f.reader.resolvePartitionBlock(ad.pref, ad.lbn)
+		if err != nil {
+			return nil, err
+		}
+		segLen := int64(ad.length)
+		if segLen < 0 {
+			continue
+		}
+		if fileOff+segLen > size {
+			segLen = size - fileOff
+		}
+		exts = append(exts, extent{
+			fileStart: fileOff,
+			fileEnd:   fileOff + segLen,
+			physOff:   int64(loc) * int64(f.reader.blockSize),
+		})
+		fileOff += segLen
+	}
+	if len(exts) == 0 {
+		return &fileReader{reader: f.reader, offset: 0, size: 0}, nil
+	}
+	if len(exts) == 1 && exts[0].fileStart == 0 {
+		return &fileReader{reader: f.reader, offset: exts[0].physOff, size: exts[0].fileEnd}, nil
+	}
+	return &extentReader{
+		reader:  f.reader,
+		extents: exts,
+		size:    size,
 	}, nil
 }
 
@@ -563,18 +662,13 @@ func (fr *fileReader) Read(p []byte) (n int, err error) {
 		return 0, io.EOF
 	}
 
-	// Seek to current position
-	if _, err := fr.reader.file.Seek(fr.offset+fr.position, io.SeekStart); err != nil {
-		return 0, err
-	}
-
 	// Read up to remaining size
 	toRead := len(p)
 	if remaining := fr.size - fr.position; int64(toRead) > remaining {
 		toRead = int(remaining)
 	}
 
-	n, err = fr.reader.file.Read(p[:toRead])
+	n, err = fr.reader.file.ReadAt(p[:toRead], fr.offset+fr.position)
 	fr.position += int64(n)
 
 	if fr.position >= fr.size && err == nil {
@@ -588,6 +682,78 @@ func (fr *fileReader) Close() error {
 	// Nothing to close - the main file handle stays open
 	return nil
 }
+
+type extent struct {
+	fileStart int64
+	fileEnd   int64
+	physOff   int64
+}
+
+type extentReader struct {
+	reader  *Reader
+	extents []extent
+	size    int64
+
+	pos int64
+	idx int
+}
+
+func (er *extentReader) Read(p []byte) (n int, err error) {
+	if er.pos >= er.size {
+		return 0, io.EOF
+	}
+
+	toRead := len(p)
+	if remaining := er.size - er.pos; int64(toRead) > remaining {
+		toRead = int(remaining)
+	}
+
+	for n < toRead {
+		if er.idx >= len(er.extents) {
+			if n == 0 {
+				return 0, io.EOF
+			}
+			return n, io.EOF
+		}
+		ex := er.extents[er.idx]
+		if er.pos >= ex.fileEnd {
+			er.idx++
+			continue
+		}
+		if er.pos < ex.fileStart {
+			// Shouldn't happen for sequential extents, but avoid loops if it does.
+			er.pos = ex.fileStart
+		}
+
+		inExtent := ex.fileEnd - er.pos
+		want := toRead - n
+		if int64(want) > inExtent {
+			want = int(inExtent)
+		}
+
+		off := ex.physOff + (er.pos - ex.fileStart)
+		nn, rerr := er.reader.file.ReadAt(p[n:n+want], off)
+		n += nn
+		er.pos += int64(nn)
+		if rerr != nil {
+			if rerr == io.EOF {
+				er.idx++
+				continue
+			}
+			return n, rerr
+		}
+		if nn < want {
+			er.idx++
+		}
+	}
+
+	if er.pos >= er.size {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (er *extentReader) Close() error { return nil }
 
 // convertTimestamp converts UDF timestamp to Go time.Time
 func convertTimestamp(ts Timestamp) time.Time {
@@ -642,7 +808,7 @@ func (r *Reader) FindFile(filePath string) (*File, error) {
 			for _, dir := range dirs {
 				if strings.EqualFold(dir.Name, part) {
 					currentDir = dir
-					if err := currentDir.readEntries(); err != nil {
+					if err := currentDir.ensureEntries(); err != nil {
 						return nil, err
 					}
 					found = true
@@ -699,9 +865,9 @@ func (d *Directory) readEmbeddedDirectoryData(data []byte) error {
 
 		// ICB LongAD (16 bytes, offset 20-35)
 		fid.ICB.ExtentLength = binary.LittleEndian.Uint32(data[offset+20 : offset+24])
-		fid.ICB.ExtentLocation.Length = binary.LittleEndian.Uint32(data[offset+24 : offset+28])
-		fid.ICB.ExtentLocation.Location = binary.LittleEndian.Uint32(data[offset+28 : offset+32])
-		copy(fid.ICB.ImplementationUse[:], data[offset+32:offset+38])
+		fid.ICB.ExtentLocation.LogicalBlockNumber = binary.LittleEndian.Uint32(data[offset+24 : offset+28])
+		fid.ICB.ExtentLocation.PartitionReferenceNumber = binary.LittleEndian.Uint16(data[offset+28 : offset+30])
+		copy(fid.ICB.ImplementationUse[:], data[offset+30:offset+36])
 
 		// LengthOfImplementationUse (2 bytes, offset 36-37)
 		fid.LengthOfImplementationUse = binary.LittleEndian.Uint16(data[offset+36 : offset+38])
@@ -739,8 +905,11 @@ func (d *Directory) readEmbeddedDirectoryData(data []byte) error {
 // tryReadBlurayRootDirectory attempts to read root directory using Blu-ray specific layout
 func (d *Directory) tryReadBlurayRootDirectory() error {
 	// Blu-ray discs often store directory data immediately after the FileSet descriptor
-	// FileSet is at partition sector 32 (absolute sector 320 for this disc)
-	fileSetLocation := d.reader.partitionStart + 32
+	// FileSet is typically at partition sector 32 for BD-ROM, but prefer the actual parsed location.
+	fileSetLocation := d.reader.partitionStart + d.reader.fileSetLocation
+	if d.reader.fileSetLocation == 0 {
+		fileSetLocation = d.reader.partitionStart + 32
+	}
 
 	// Try several potential locations for directory data
 	locations := []int64{

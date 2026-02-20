@@ -26,6 +26,7 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 		reportName = fmt.Sprintf(reportName, bd.VolumeLabel)
 	}
 	if reportName != "-" && filepath.Ext(reportName) == "" {
+		// Match BDInfo: default extension.
 		reportName = reportName + ".bdinfo"
 	}
 	if path != "" {
@@ -88,18 +89,31 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 	fmt.Fprintf(&b, "%-16s%s\n\n\n", "BDInfo:", productVersion)
 
 	if settings.IncludeVersionAndNotes {
-		if scan.ScanError != nil {
-			fmt.Fprintf(&b, "WARNING: Report is incomplete because: %s\n", scan.ScanError.Error())
-		}
-		if len(scan.FileErrors) > 0 {
-			b.WriteString("WARNING: File errors were encountered during scan:\n")
-			for name, err := range scan.FileErrors {
-				fmt.Fprintf(&b, "\n%s\t%s\n", name, err.Error())
-			}
+		fmt.Fprintf(&b, "%-16s%s\n\n\n", "Notes:", "")
+		b.WriteString("BDINFO HOME:\n")
+		b.WriteString("  Cinema Squid (old)\n")
+		b.WriteString("    http://www.cinemasquid.com/blu-ray/tools/bdinfo\n")
+		b.WriteString("  UniqProject GitHub (new)\n")
+		b.WriteString("   https://github.com/UniqProject/BDInfo\n")
+		b.WriteString("\n")
+		b.WriteString("INCLUDES FORUMS REPORT FOR:\n")
+		b.WriteString("  AVS Forum Blu-ray Audio and Video Specifications Thread\n")
+		b.WriteString("    http://www.avsforum.com/avs-vb/showthread.php?t=1155731\n")
+		b.WriteString("\n\n")
+	}
+
+	if scan.ScanError != nil {
+		fmt.Fprintf(&b, "WARNING: Report is incomplete because: %s\n", scan.ScanError.Error())
+	}
+	if len(scan.FileErrors) > 0 {
+		b.WriteString("WARNING: File errors were encountered during scan:\n")
+		for name, err := range scan.FileErrors {
+			// C# appends stack trace; Go errors generally don't include one.
+			fmt.Fprintf(&b, "\n%s\t%s\n", name, err.Error())
 		}
 	}
 
-	if settings.MainPlaylistOnly {
+	if settings.MainPlaylistOnly || settings.BigPlaylistOnly {
 		playlists = selectMainPlaylist(playlists, settings)
 	}
 
@@ -193,11 +207,8 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 		if len(extra) > 0 {
 			fmt.Fprintf(&b, "%-16s%s\n", "Extras:", strings.Join(extra, ", "))
 		}
-		if settings.IncludeVersionAndNotes {
-			fmt.Fprintf(&b, "%-16s%s\n\n\n", "BDInfo:", productVersion)
-		} else {
-			b.WriteString("\n\n\n")
-		}
+		// BDInfo prints the product version in every playlist block.
+		fmt.Fprintf(&b, "%-16s%s\n\n\n", "BDInfo:", productVersion)
 
 		b.WriteString("PLAYLIST REPORT:\n\n\n")
 		fmt.Fprintf(&b, "%-24s%s\n", "Name:", playlist.Name)
@@ -206,7 +217,9 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 		fmt.Fprintf(&b, "%-24s%s Mbps\n", "Total Bitrate:", totalBitrate)
 
 		if playlist.HasHiddenTracks {
-			b.WriteString("\n(*) Indicates included stream hidden by this playlist.\n")
+			// Match official BDInfo: it inserts a CRLF line-break before the hidden-tracks note.
+			// The surrounding report uses LF; this specific CRLF is a quirk in the official output.
+			b.WriteString("\r\n(*) Indicates included stream hidden by this playlist.\n")
 		}
 
 		if len(playlist.VideoStreams) > 0 {
@@ -313,47 +326,46 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 			fmt.Fprintf(&b, "%sEnd group%s\n\n\n", separator, separator)
 		}
 
-		if len(playlist.Chapters) > 0 {
-			b.WriteString("\n\nCHAPTERS:\n\n\n")
-			fmt.Fprintf(&b, "%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s\n",
-				"Number",
-				"Time In",
-				"Length",
-				"Avg Video Rate",
-				"Max 1-Sec Rate",
-				"Max 1-Sec Time",
-				"Max 5-Sec Rate",
-				"Max 5-Sec Time",
-				"Max 10Sec Rate",
-				"Max 10Sec Time",
-				"Avg Frame Size",
-				"Max Frame Size",
-				"Max Frame Time",
-			)
-			fmt.Fprintf(&b, "%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s\n",
-				"------",
-				"-------",
-				"------",
-				"--------------",
-				"--------------",
-				"--------------",
-				"--------------",
-				"--------------",
-				"--------------",
-				"--------------",
-				"--------------",
-				"--------------",
-				"--------------",
-			)
-			writeChapters(&b, playlist)
-		}
+		// Match official BDInfo: always print the CHAPTERS section (even when empty).
+		b.WriteString("\n\nCHAPTERS:\n\n\n")
+		fmt.Fprintf(&b, "%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s\n",
+			"Number",
+			"Time In",
+			"Length",
+			"Avg Video Rate",
+			"Max 1-Sec Rate",
+			"Max 1-Sec Time",
+			"Max 5-Sec Rate",
+			"Max 5-Sec Time",
+			"Max 10Sec Rate",
+			"Max 10Sec Time",
+			"Avg Frame Size",
+			"Max Frame Size",
+			"Max Frame Time",
+		)
+		fmt.Fprintf(&b, "%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s%-16s\n",
+			"------",
+			"-------",
+			"------",
+			"--------------",
+			"--------------",
+			"--------------",
+			"--------------",
+			"--------------",
+			"--------------",
+			"--------------",
+			"--------------",
+			"--------------",
+			"--------------",
+		)
+		writeChapters(&b, playlist)
 
 		if settings.GenerateStreamDiagnostics {
 			b.WriteString("\n\nSTREAM DIAGNOSTICS:\n\n\n")
 			fmt.Fprintf(&b, "%-16s%-16s%-16s%-16s%-24s%-24s%-24s%-16s%-16s\n",
 				"File", "PID", "Type", "Codec", "Language", "Seconds", "Bitrate", "Bytes", "Packets")
 			fmt.Fprintf(&b, "%-16s%-16s%-16s%-16s%-24s%-24s%-24s%-16s%-16s\n",
-				"----", "---", "----", "-----", "--------", "--------------", "--------------", "-------------", "-------")
+				"----", "---", "----", "-----", "--------", "--------------", "--------------", "-------------", "-----")
 
 			reported := map[string]bool{}
 			for _, clip := range playlist.StreamClips {
@@ -369,22 +381,88 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 				if clip.AngleIndex > 0 {
 					clipName = fmt.Sprintf("%s (%d)", clipName, clip.AngleIndex)
 				}
-				for pid, clipStream := range clip.StreamFile.Streams {
-					if _, ok := playlist.Streams[pid]; !ok {
+
+				// Match official BDInfo ordering: when stream insertion order is known, use it directly.
+				// Fallback to deterministic kind/PID ordering.
+				pids := make([]uint16, 0, len(clip.StreamFile.Streams))
+				hasStreamOrder := len(clip.StreamFile.StreamOrder) > 0
+				if hasStreamOrder {
+					for _, pid := range clip.StreamFile.StreamOrder {
+						clipStream := clip.StreamFile.Streams[pid]
+						if clipStream == nil {
+							continue
+						}
+						if _, ok := playlist.Streams[pid]; !ok {
+							continue
+						}
+						pids = append(pids, pid)
+					}
+				} else {
+					for pid, clipStream := range clip.StreamFile.Streams {
+						if clipStream == nil {
+							continue
+						}
+						if _, ok := playlist.Streams[pid]; !ok {
+							continue
+						}
+						pids = append(pids, pid)
+					}
+				}
+				streamWeight := func(pid uint16) int {
+					if playlistStream := playlist.Streams[pid]; playlistStream != nil {
+						base := playlistStream.Base()
+						if base.IsVideoStream() && base.IsHidden {
+							return 5
+						}
+					}
+					info := clip.StreamFile.Streams[pid]
+					if info == nil {
+						return 9
+					}
+					base := info.Base()
+					switch {
+					case base.IsVideoStream():
+						return 0
+					case base.IsAudioStream():
+						return 1
+					case base.IsGraphicsStream():
+						return 2
+					case base.IsTextStream():
+						return 3
+					default:
+						return 4
+					}
+				}
+				if !hasStreamOrder {
+					sort.Slice(pids, func(i, j int) bool {
+						wi := streamWeight(pids[i])
+						wj := streamWeight(pids[j])
+						if wi != wj {
+							return wi < wj
+						}
+						return pids[i] < pids[j]
+					})
+				}
+
+				for _, pid := range pids {
+					clipStream := clip.StreamFile.Streams[pid]
+					if clipStream == nil {
 						continue
 					}
-					playlistStream := playlist.Streams[pid]
 
 					clipSeconds := "0"
 					clipBitRate := "0"
 					if clip.StreamFile.Length > 0 {
-						clipSeconds = fmt.Sprintf("%.3f", clip.StreamFile.Length)
-						clipBitRate = util.FormatNumber(int64(math.RoundToEven(float64(clipStream.Base().PayloadBytes) * 8 / clip.StreamFile.Length / 1000)))
+						seconds := clip.StreamFile.Length
+						clipSeconds = fmt.Sprintf("%.3f", seconds)
+						clipBitRate = util.FormatNumber(int64(math.RoundToEven(float64(clipStream.Base().PayloadBytes) * 8 / seconds / 1000)))
 					}
 
 					language := ""
-					if code := playlistStream.Base().LanguageCode(); code != "" {
-						language = fmt.Sprintf("%s (%s)", code, playlistStream.Base().LanguageName)
+					if playlistStream := playlist.Streams[pid]; playlistStream != nil {
+						if code := playlistStream.Base().LanguageCode(); code != "" {
+							language = fmt.Sprintf("%s (%s)", code, playlistStream.Base().LanguageName)
+						}
 					}
 
 					fmt.Fprintf(&b, "%-16s%-16s%-16s%-16s%-24s%-24s%-24s%-16s%-16s\n",
@@ -461,13 +539,32 @@ func selectMainPlaylist(playlists []*bdrom.PlaylistFile, settings settings.Setti
 		if p == nil {
 			continue
 		}
-		mainBitrate := main.TotalBitRate()
-		pBitrate := p.TotalBitRate()
-		if pBitrate > mainBitrate {
+
+		// Official BDInfo `--printonlybigplaylist`: pick by size (fallback to name).
+		if settings.BigPlaylistOnly {
+			mainSize := main.TotalSize()
+			pSize := p.TotalSize()
+			if pSize > mainSize {
+				main = p
+				continue
+			}
+			if pSize < mainSize {
+				continue
+			}
+			if p.Name < main.Name {
+				main = p
+			}
+			continue
+		}
+
+		// `--main`: heuristic main feature selection. Prefer longest, then largest.
+		mainLen := main.TotalLength()
+		pLen := p.TotalLength()
+		if pLen > mainLen {
 			main = p
 			continue
 		}
-		if pBitrate < mainBitrate {
+		if pLen < mainLen {
 			continue
 		}
 		mainSize := main.TotalSize()
@@ -477,6 +574,16 @@ func selectMainPlaylist(playlists []*bdrom.PlaylistFile, settings settings.Setti
 			continue
 		}
 		if pSize < mainSize {
+			continue
+		}
+
+		mainBitrate := main.TotalBitRate()
+		pBitrate := p.TotalBitRate()
+		if pBitrate > mainBitrate {
+			main = p
+			continue
+		}
+		if pBitrate < mainBitrate {
 			continue
 		}
 		if p.Name < main.Name {
@@ -624,7 +731,7 @@ func buildSummaryOnly(bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, settings
 
 func formatMbps(bitrate uint64) string {
 	if bitrate == 0 {
-		return "0"
+		return "0.00"
 	}
 	val := math.RoundToEven(float64(bitrate)/10000.0) / 100.0
 	return fmt.Sprintf("%.2f", val)

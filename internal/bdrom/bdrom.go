@@ -77,6 +77,11 @@ func scanWorkerLimit(total int, totalBytes uint64) int {
 			return clampWorkers(parsed, total)
 		}
 	}
+	if totalBytes > 0 {
+		// Stream scans are storage-bound in this workload. Sequential single-worker reads
+		// avoid seek-thrash and improve throughput on both ISO and folder sources.
+		return clampWorkers(1, total)
+	}
 	limit := tunedWorkerLimit(total, totalBytes)
 	return clampWorkers(limit, total)
 }

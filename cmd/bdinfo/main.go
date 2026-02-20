@@ -22,6 +22,8 @@ var version = "dev"
 
 type rootOptions struct {
 	path             string
+	pathFlag         string
+	reportPath       string
 	reportFile       string
 	filterShortValue int
 	genDiag          bool
@@ -35,10 +37,20 @@ type rootOptions struct {
 	groupByTime      bool
 	forumsOnly       bool
 	mainOnly         bool
+	bigPlaylistOnly  bool
 	summaryOnly      bool
 	stdout           bool
+	printToConsole   bool
 	selfUpdate       bool
 	progress         bool
+
+	// Compatibility-only flags (accepted, currently no-op).
+	displayChapterCount bool
+	autoSaveReport      bool
+	generateFrameData   bool
+	useImagePrefix      bool
+	imagePrefixValue    string
+	isExecutedAsScript  bool
 }
 
 var opts rootOptions
@@ -92,21 +104,33 @@ func init() {
 	rootCmd.SetErr(os.Stderr)
 	rootCmd.SetHelpTemplate(helpTemplate)
 
+	// Official BDInfo compatibility: path as required flag. Positional arg still supported.
+	rootCmd.Flags().StringVarP(&opts.pathFlag, "path", "p", "", "Required. The path to iso or bluray folder")
+	rootCmd.Flags().StringVarP(&opts.reportPath, "reportpath", "r", "", "The folder where report will be saved (compat)")
 	rootCmd.Flags().StringVarP(&opts.reportFile, "reportfilename", "o", "", "The report filename with extension (use - for stdout)")
 	rootCmd.Flags().BoolVar(&opts.stdout, "stdout", false, "Write report to stdout")
 	rootCmd.Flags().BoolVarP(&opts.genDiag, "generatestreamdiagnostics", "g", false, "Generate the stream diagnostics section")
 	rootCmd.Flags().BoolVarP(&opts.extDiag, "extendedstreamdiagnostics", "e", false, "Enable extended video diagnostics (HEVC metadata)")
 	rootCmd.Flags().BoolVarP(&opts.enableSSIF, "enablessif", "b", false, "Enable SSIF support (default on; use --enablessif=false to disable)")
+	rootCmd.Flags().BoolVarP(&opts.displayChapterCount, "displaychaptercount", "c", false, "Enable chapter count (compat)")
+	rootCmd.Flags().BoolVarP(&opts.autoSaveReport, "autosavereport", "a", false, "Auto save report (compat)")
+	// No short flag: `-f` is already used by `--forumsonly` in this CLI.
+	rootCmd.Flags().BoolVar(&opts.generateFrameData, "generateframedatafile", false, "Generate frame data file (compat)")
 	rootCmd.Flags().BoolVarP(&opts.filterLooping, "filterloopingplaylists", "l", false, "Filter looping playlists")
 	rootCmd.Flags().BoolVarP(&opts.filterShort, "filtershortplaylist", "y", false, "Filter short playlists (default on; use --filtershortplaylist=false to disable)")
 	rootCmd.Flags().IntVarP(&opts.filterShortValue, "filtershortplaylistvalue", "v", 20, "Short playlist length threshold in seconds")
+	rootCmd.Flags().BoolVarP(&opts.useImagePrefix, "useimageprefix", "i", false, "Use image prefix (compat)")
+	rootCmd.Flags().StringVarP(&opts.imagePrefixValue, "useimageprefixvalue", "x", "video-", "Image prefix (compat)")
 	rootCmd.Flags().BoolVarP(&opts.keepOrder, "keepstreamorder", "k", false, "Keep stream order")
 	rootCmd.Flags().BoolVarP(&opts.genSummary, "generatetextsummary", "m", false, "Generate quick summary block (default on; use --generatetextsummary=false to disable)")
 	rootCmd.Flags().BoolVarP(&opts.includeNotes, "includeversionandnotes", "q", false, "Include version and scan notes (default on; use --includeversionandnotes=false to disable)")
 	rootCmd.Flags().BoolVarP(&opts.groupByTime, "groupbytime", "j", false, "Group by time")
 	rootCmd.Flags().BoolVarP(&opts.forumsOnly, "forumsonly", "f", false, "Output only the forums paste block")
 	rootCmd.Flags().BoolVar(&opts.mainOnly, "main", false, "Output only the main playlist (likely what you want)")
+	rootCmd.Flags().BoolVarP(&opts.bigPlaylistOnly, "printonlybigplaylist", "z", false, "Print report with only biggest playlist (compat)")
+	rootCmd.Flags().BoolVarP(&opts.printToConsole, "printtoconsole", "w", false, "Print report to console (compat)")
 	rootCmd.Flags().BoolVarP(&opts.summaryOnly, "summaryonly", "s", false, "Output only the quick summary block (likely what you want)")
+	rootCmd.Flags().BoolVarP(&opts.isExecutedAsScript, "isexecutedasscript", "d", false, "Check if is executed as script (compat)")
 	rootCmd.Flags().BoolVar(&opts.selfUpdate, "self-update", false, "Update bdinfo to latest version (release builds only)")
 	rootCmd.Flags().BoolVar(&opts.selfUpdate, "update", false, "Update bdinfo to latest version (release builds only)")
 	rootCmd.Flags().BoolVar(&opts.progress, "progress", false, "Print scan progress to stderr")
@@ -116,10 +140,58 @@ func init() {
 }
 
 func main() {
+	// Official BDInfo compatibility: allow bool flags with explicit values (e.g. `-m true`).
+	// Cobra/pflag treats the trailing `true`/`false` as a positional arg, so rewrite into `--flag=value`.
+	os.Args = append([]string{os.Args[0]}, normalizeArgs(os.Args[1:])...)
+
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "bdinfo: %s\n", err.Error())
 		os.Exit(1)
 	}
+}
+
+func normalizeArgs(args []string) []string {
+	isBoolLit := func(s string) bool {
+		switch strings.ToLower(s) {
+		case "true", "false":
+			return true
+		default:
+			return false
+		}
+	}
+
+	// Map both short and long spellings to the long name we register.
+	boolCanon := map[string]string{
+		"-g": "--generatestreamdiagnostics", "--generatestreamdiagnostics": "--generatestreamdiagnostics",
+		"-e": "--extendedstreamdiagnostics", "--extendedstreamdiagnostics": "--extendedstreamdiagnostics",
+		"-b": "--enablessif", "--enablessif": "--enablessif",
+		"-l": "--filterloopingplaylists", "--filterloopingplaylists": "--filterloopingplaylists",
+		"-y": "--filtershortplaylist", "--filtershortplaylist": "--filtershortplaylist",
+		"-k": "--keepstreamorder", "--keepstreamorder": "--keepstreamorder",
+		"-m": "--generatetextsummary", "--generatetextsummary": "--generatetextsummary",
+		"-q": "--includeversionandnotes", "--includeversionandnotes": "--includeversionandnotes",
+		"-j": "--groupbytime", "--groupbytime": "--groupbytime",
+		"-f": "--forumsonly", "--forumsonly": "--forumsonly",
+		"-w": "--printtoconsole", "--printtoconsole": "--printtoconsole",
+		"-z": "--printonlybigplaylist", "--printonlybigplaylist": "--printonlybigplaylist",
+		"--main": "--main",
+		"-s":     "--summaryonly", "--summaryonly": "--summaryonly",
+		"--stdout":   "--stdout",
+		"--progress": "--progress",
+	}
+
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		canon, ok := boolCanon[a]
+		if ok && i+1 < len(args) && isBoolLit(args[i+1]) {
+			out = append(out, canon+"="+strings.ToLower(args[i+1]))
+			i++
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 func runRoot(cmd *cobra.Command, args []string) error {
@@ -127,14 +199,18 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		return runSelfUpdate(cmd.Context())
 	}
 
-	if len(args) == 0 {
+	if opts.pathFlag != "" {
+		opts.path = opts.pathFlag
+	} else if len(args) > 0 {
+		opts.path = args[0]
+	}
+
+	if opts.path == "" {
 		if cmd.Flags().NFlag() == 0 {
 			return cmd.Help()
 		}
 		return errors.New("path is required")
 	}
-
-	opts.path = args[0]
 
 	cwd, _ := os.Getwd()
 	s := settings.Default(cwd)
@@ -168,6 +244,15 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	if opts.stdout {
 		s.ReportFileName = "-"
 	}
+	if flags.Changed("printtoconsole") && opts.printToConsole {
+		s.ReportFileName = "-"
+	}
+	if flags.Changed("reportpath") && opts.reportPath != "" && s.ReportFileName != "-" {
+		// BDInfo compatibility: report path overrides the folder where report is saved.
+		if !filepath.IsAbs(s.ReportFileName) {
+			s.ReportFileName = filepath.Join(opts.reportPath, filepath.Base(s.ReportFileName))
+		}
+	}
 	if flags.Changed("includeversionandnotes") {
 		s.IncludeVersionAndNotes = opts.includeNotes
 	}
@@ -179,6 +264,9 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	}
 	if flags.Changed("main") {
 		s.MainPlaylistOnly = opts.mainOnly
+	}
+	if flags.Changed("printonlybigplaylist") {
+		s.BigPlaylistOnly = opts.bigPlaylistOnly
 	}
 	if flags.Changed("summaryonly") {
 		s.SummaryOnly = opts.summaryOnly

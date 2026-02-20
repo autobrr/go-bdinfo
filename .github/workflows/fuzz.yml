@@ -1,0 +1,50 @@
+name: fuzz
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily fuzz run; keep CI fast with unit/integration tests in ci.yml.
+    - cron: "17 05 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CGO_ENABLED: 0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go fuzz
+        run: |
+          set -euo pipefail
+          go test ./internal/buffer -run=^$ -fuzz=FuzzBitReader -fuzztime=2m
+          go test ./internal/codec -run=^$ -fuzz=FuzzScanAVC -fuzztime=2m
+          go test ./internal/codec -run=^$ -fuzz=FuzzScanHEVC -fuzztime=2m
+          go test ./internal/codec -run=^$ -fuzz=FuzzHEVCFrameTagFromTransfer -fuzztime=2m
+          go test ./internal/bdrom -run=^$ -fuzz=FuzzStreamClipFileScan -fuzztime=2m
+          go test ./internal/bdrom -run=^$ -fuzz=FuzzParsePTSAndValidateTimestamp -fuzztime=2m
+
+      - name: Upload fuzz crashers/corpus
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          if-no-files-found: ignore
+          path: |
+            **/testdata/fuzz/
+

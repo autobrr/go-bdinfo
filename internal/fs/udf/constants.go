@@ -57,10 +57,17 @@ type ExtentAD struct {
 	Location uint32
 }
 
+// LBAddr represents a logical block address (ECMA-167).
+// LogicalBlockNumber is relative to the referenced partition.
+type LBAddr struct {
+	LogicalBlockNumber       uint32
+	PartitionReferenceNumber uint16
+}
+
 // LongAD represents long allocation descriptor
 type LongAD struct {
 	ExtentLength      uint32
-	ExtentLocation    ExtentAD
+	ExtentLocation    LBAddr
 	ImplementationUse [6]byte
 }
 

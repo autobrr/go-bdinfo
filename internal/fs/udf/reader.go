@@ -15,9 +15,32 @@ type Reader struct {
 	blockSize       uint32
 	partitionStart  uint32
 	partitionSize   uint32
+	partitionStarts map[uint16]uint32
+	partitionMaps   []partitionMap
 	rootICB         LongAD
 	fileSetDesc     *FileSetDescriptor
 	fileSetLocation uint32
+
+	metadataFileICB        *LongAD
+	metadataFileAllocDescs []allocationDescriptor
+}
+
+type partitionMapKind uint8
+
+const (
+	partitionMapType1 partitionMapKind = 1
+	partitionMapType2 partitionMapKind = 2
+)
+
+type partitionMap struct {
+	kind partitionMapKind
+
+	// Type 1 map.
+	partitionNumber uint16
+
+	// Type 2 metadata map ("UDF Metadata Partition").
+	metadataICBLBN uint32 // file entry ICB LBN in partition ref 0
+	isMetadata     bool
 }
 
 // NewReader creates a new UDF reader
@@ -28,8 +51,9 @@ func NewReader(path string) (*Reader, error) {
 	}
 
 	reader := &Reader{
-		file:      file,
-		blockSize: SectorSize,
+		file:            file,
+		blockSize:       SectorSize,
+		partitionStarts: make(map[uint16]uint32),
 	}
 
 	if err := reader.initialize(); err != nil {
@@ -227,13 +251,29 @@ func (r *Reader) readVolumeDescriptorSequence(extent ExtentAD) error {
 			if err := r.readDescriptor(&pd); err != nil {
 				return err
 			}
-			r.partitionStart = pd.PartitionStartingLocation
-			r.partitionSize = pd.PartitionLength
+			r.partitionStarts[pd.PartitionNumber] = pd.PartitionStartingLocation
+			// Keep legacy single-partition fields for callers that assume one partition.
+			if r.partitionStart == 0 {
+				r.partitionStart = pd.PartitionStartingLocation
+				r.partitionSize = pd.PartitionLength
+			}
 
 		case TagLogicalVolume:
 			var lvd LogicalVolumeDescriptor
 			if err := r.readDescriptor(&lvd); err != nil {
 				return err
+			}
+			if lvd.LogicalBlockSize != 0 {
+				r.blockSize = lvd.LogicalBlockSize
+			}
+			if lvd.MapTableLength > 0 && lvd.NumberOfPartitionMaps > 0 {
+				pm := make([]byte, lvd.MapTableLength)
+				if _, err := io.ReadFull(r.file, pm); err != nil {
+					return fmt.Errorf("failed to read partition map table: %w", err)
+				}
+				if err := r.parsePartitionMaps(pm, lvd.NumberOfPartitionMaps); err != nil {
+					return fmt.Errorf("failed to parse partition maps: %w", err)
+				}
 			}
 			// Extract root directory location from logical volume contents use
 			// The first 8 bytes contain the file set descriptor location as ExtentAD
@@ -295,16 +335,220 @@ func (r *Reader) decodeString(data []byte) string {
 		return ""
 	}
 
-	// Simple implementation - assumes ASCII for now
-	// Full implementation would handle compression types
 	compType := data[0]
-	if compType == 8 || compType == 16 {
-		// Latin-1 or UCS-2
-		result := strings.TrimRight(string(data[1:]), "\x00 ")
-		return result
+	switch compType {
+	case 8:
+		// 8-bit (typically Latin-1). Stop at first NUL.
+		s := string(data[1:])
+		if idx := strings.IndexByte(s, 0); idx >= 0 {
+			s = s[:idx]
+		}
+		return strings.TrimRight(s, " ")
+	case 16:
+		// UCS-2 (OSTA CS0), big-endian code units. Stop at first 0x0000.
+		b := data[1:]
+		runes := make([]rune, 0, len(b)/2)
+		for i := 0; i+1 < len(b); i += 2 {
+			u := uint16(b[i])<<8 | uint16(b[i+1])
+			if u == 0 {
+				break
+			}
+			runes = append(runes, rune(u))
+		}
+		return strings.TrimRight(string(runes), " ")
 	}
 
 	return ""
+}
+
+func (r *Reader) BlockSize() uint32      { return r.blockSize }
+func (r *Reader) PartitionStart() uint32 { return r.partitionStart }
+func (r *Reader) FileSetLocation() uint32 {
+	return r.fileSetLocation
+}
+func (r *Reader) RootICB() LongAD { return r.rootICB }
+
+func (r *Reader) DebugPartitionMaps() []string {
+	var out []string
+	for i, pm := range r.partitionMaps {
+		switch pm.kind {
+		case partitionMapType1:
+			out = append(out, fmt.Sprintf("%d:type1 partNum=%d", i, pm.partitionNumber))
+		case partitionMapType2:
+			if pm.isMetadata {
+				out = append(out, fmt.Sprintf("%d:type2 metadata icbLBN=%d", i, pm.metadataICBLBN))
+			} else {
+				out = append(out, fmt.Sprintf("%d:type2", i))
+			}
+		default:
+			out = append(out, fmt.Sprintf("%d:unknown", i))
+		}
+	}
+	return out
+}
+
+const udfMetadataPartitionIdent = "UDF Metadata Partition"
+
+func (r *Reader) parsePartitionMaps(pm []byte, n uint32) error {
+	r.partitionMaps = nil
+	r.metadataFileICB = nil
+	r.metadataFileAllocDescs = nil
+
+	off := 0
+	for i := uint32(0); i < n; i++ {
+		if off+2 > len(pm) {
+			return fmt.Errorf("partition map %d: truncated header", i)
+		}
+		mtype := pm[off]
+		mlen := int(pm[off+1])
+		if mlen < 2 || off+mlen > len(pm) {
+			return fmt.Errorf("partition map %d: invalid length %d", i, mlen)
+		}
+
+		switch partitionMapKind(mtype) {
+		case partitionMapType1:
+			// Type 1: type, len, volSeq (2), partitionNumber (2).
+			if mlen < 6 {
+				return fmt.Errorf("partition map %d: type1 too short: %d", i, mlen)
+			}
+			partNum := binary.LittleEndian.Uint16(pm[off+4 : off+6])
+			r.partitionMaps = append(r.partitionMaps, partitionMap{
+				kind:            partitionMapType1,
+				partitionNumber: partNum,
+			})
+
+		case partitionMapType2:
+			m := partitionMap{kind: partitionMapType2}
+			if mlen >= 4+32 {
+				ident := strings.TrimRight(string(pm[off+5:off+5+23]), "\x00")
+				ident = strings.TrimPrefix(ident, "*")
+				if ident == udfMetadataPartitionIdent {
+					m.isMetadata = true
+					// UDF Metadata Partition Map:
+					// Common BD-ROM layout encodes the metadata file ICB location as extent_ad
+					// (len=1, loc=<lbn>) at offset 36 from start of the map.
+					if mlen >= 36+8 {
+						extLen := binary.LittleEndian.Uint32(pm[off+36 : off+40])
+						extLoc := binary.LittleEndian.Uint32(pm[off+40 : off+44])
+						if extLen == 1 {
+							m.metadataICBLBN = extLoc
+						} else {
+							// Fallback: interpret extLen as the LBN (seen on some images).
+							m.metadataICBLBN = extLen
+						}
+					}
+				}
+			}
+			r.partitionMaps = append(r.partitionMaps, m)
+
+		default:
+			r.partitionMaps = append(r.partitionMaps, partitionMap{})
+		}
+
+		off += mlen
+	}
+
+	for _, m := range r.partitionMaps {
+		if m.kind == partitionMapType2 && m.isMetadata {
+			icb := LongAD{
+				ExtentLocation: LBAddr{
+					LogicalBlockNumber:       m.metadataICBLBN,
+					PartitionReferenceNumber: 0, // metadata file lives in main partition map
+				},
+			}
+			r.metadataFileICB = &icb
+			break
+		}
+	}
+
+	if r.metadataFileICB != nil && r.file != nil {
+		if _, err := r.metadataFileAllocationDescriptors(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *Reader) resolvePartitionBlock(partRef uint16, lbn uint32) (uint32, error) {
+	return r.resolveLBAddr(LBAddr{
+		LogicalBlockNumber:       lbn,
+		PartitionReferenceNumber: partRef,
+	})
+}
+
+func (r *Reader) resolveLBAddr(addr LBAddr) (uint32, error) {
+	pref := int(addr.PartitionReferenceNumber)
+	if pref >= 0 && pref < len(r.partitionMaps) {
+		pm := r.partitionMaps[pref]
+		switch pm.kind {
+		case partitionMapType1:
+			start := r.partitionStart
+			if ps, ok := r.partitionStarts[pm.partitionNumber]; ok {
+				start = ps
+			}
+			return start + addr.LogicalBlockNumber, nil
+		case partitionMapType2:
+			if pm.isMetadata {
+				return r.resolveMetadataBlock(addr.LogicalBlockNumber)
+			}
+		}
+	}
+
+	// Fallback: treat as a single direct partition.
+	return r.partitionStart + addr.LogicalBlockNumber, nil
+}
+
+func (r *Reader) resolveMetadataBlock(lbn uint32) (uint32, error) {
+	allocs, err := r.metadataFileAllocationDescriptors()
+	if err != nil {
+		return 0, err
+	}
+
+	blockSize := r.blockSize
+	if blockSize == 0 {
+		blockSize = SectorSize
+	}
+
+	var fileBlockBase uint32
+	for _, ad := range allocs {
+		extentBytes := ad.length
+		if extentBytes == 0 {
+			continue
+		}
+		extentBlocks := extentBytes / blockSize
+		if extentBytes%blockSize != 0 {
+			extentBlocks++
+		}
+
+		if lbn < fileBlockBase+extentBlocks {
+			within := lbn - fileBlockBase
+			return r.resolvePartitionBlock(ad.pref, ad.lbn+within)
+		}
+		fileBlockBase += extentBlocks
+	}
+
+	return 0, fmt.Errorf("metadata block out of range: %d", lbn)
+}
+
+func (r *Reader) metadataFileAllocationDescriptors() ([]allocationDescriptor, error) {
+	if r.metadataFileAllocDescs != nil {
+		return r.metadataFileAllocDescs, nil
+	}
+	if r.metadataFileICB == nil {
+		return nil, fmt.Errorf("metadata partition present but metadata file ICB not set")
+	}
+
+	entry, entryData, err := r.readFileEntryWithData(*r.metadataFileICB)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read metadata file entry: %w", err)
+	}
+	allocs := r.readAllocationDescriptors(entry, entryData, 0)
+	if len(allocs) == 0 {
+		return nil, fmt.Errorf("metadata file has no allocation descriptors")
+	}
+	r.metadataFileAllocDescs = allocs
+	return allocs, nil
 }
 
 // Volume Recognition Descriptor
