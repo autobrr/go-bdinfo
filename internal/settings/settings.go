@@ -17,6 +17,7 @@ type Settings struct {
 	IncludeVersionAndNotes    bool
 	GroupByTime               bool
 	ForumsOnly                bool
+	PlaylistOnly              string
 	MainPlaylistOnly          bool
 	SummaryOnly               bool
 }
@@ -36,6 +37,7 @@ func Default(reportBaseDir string) Settings {
 		IncludeVersionAndNotes:    false,
 		GroupByTime:               false,
 		ForumsOnly:                false,
+		PlaylistOnly:              "",
 		MainPlaylistOnly:          false,
 		SummaryOnly:               false,
 	}

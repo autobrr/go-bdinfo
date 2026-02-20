@@ -23,6 +23,7 @@ var version = "dev"
 type rootOptions struct {
 	path             string
 	pathFlag         string
+	playlist         string
 	reportPath       string
 	reportFile       string
 	filterShortValue int
@@ -106,6 +107,7 @@ func init() {
 
 	// Official BDInfo compatibility: path as required flag. Positional arg still supported.
 	rootCmd.Flags().StringVarP(&opts.pathFlag, "path", "p", "", "Required. The path to iso or bluray folder")
+	rootCmd.Flags().StringVar(&opts.playlist, "playlist", "", "Process only the selected playlist (e.g. 00000.mpls)")
 	rootCmd.Flags().StringVarP(&opts.reportPath, "reportpath", "r", "", "The folder where report will be saved (compat)")
 	rootCmd.Flags().StringVarP(&opts.reportFile, "reportfilename", "o", "", "The report filename with extension (use - for stdout)")
 	rootCmd.Flags().BoolVar(&opts.stdout, "stdout", false, "Write report to stdout")
@@ -194,6 +196,38 @@ func normalizeArgs(args []string) []string {
 	return out
 }
 
+func normalizePlaylistName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return ""
+	}
+	base := filepath.Base(trimmed)
+	normalized := strings.ToUpper(base)
+	if filepath.Ext(normalized) == "" {
+		normalized += ".MPLS"
+	}
+	return normalized
+}
+
+func filterROMToPlaylist(rom *bdrom.BDROM, playlistName string) error {
+	if rom == nil {
+		return errors.New("rom is nil")
+	}
+	normalized := normalizePlaylistName(playlistName)
+	if normalized == "" {
+		return nil
+	}
+
+	pl, ok := rom.PlaylistFiles[normalized]
+	if !ok {
+		return fmt.Errorf("playlist not found: %s", normalized)
+	}
+
+	rom.PlaylistFiles = map[string]*bdrom.PlaylistFile{normalized: pl}
+	rom.PlaylistOrder = []string{normalized}
+	return nil
+}
+
 func runRoot(cmd *cobra.Command, args []string) error {
 	if opts.selfUpdate {
 		return runSelfUpdate(cmd.Context())
@@ -262,11 +296,18 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	if flags.Changed("forumsonly") {
 		s.ForumsOnly = opts.forumsOnly
 	}
+	if flags.Changed("playlist") {
+		s.PlaylistOnly = normalizePlaylistName(opts.playlist)
+	}
 	if flags.Changed("main") {
 		s.MainPlaylistOnly = opts.mainOnly
 	}
 	if flags.Changed("printonlybigplaylist") {
 		s.BigPlaylistOnly = opts.bigPlaylistOnly
+	}
+	if s.PlaylistOnly != "" {
+		s.MainPlaylistOnly = false
+		s.BigPlaylistOnly = false
 	}
 	if flags.Changed("summaryonly") {
 		s.SummaryOnly = opts.summaryOnly
@@ -434,6 +475,10 @@ func scanAndReport(path string, settings settings.Settings, progress bool) (stri
 		return "", err
 	}
 	defer rom.Close()
+
+	if err := filterROMToPlaylist(rom, settings.PlaylistOnly); err != nil {
+		return "", err
+	}
 
 	start := time.Now()
 	if progress {
