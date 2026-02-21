@@ -17,6 +17,10 @@ const (
 	StageStarting        Stage = "starting"
 	StageDiscovered      Stage = "discovered"
 	StageScanning        Stage = "scanning"
+	StageClipInfo        Stage = "clipinfo"
+	StagePlaylist        Stage = "playlist"
+	StageStream          Stage = "stream"
+	StageInitialize      Stage = "initialize"
 	StageScanComplete    Stage = "scan_complete"
 	StageRenderingReport Stage = "rendering_report"
 	StageDone            Stage = "done"
@@ -24,13 +28,17 @@ const (
 
 // ProgressEvent is emitted when Run transitions between major phases.
 type ProgressEvent struct {
-	Stage      Stage
-	Path       string
-	Playlists  int
-	ClipInfos  int
-	Streams    int
-	Elapsed    time.Duration
-	OccurredAt time.Time
+	Stage          Stage
+	Path           string
+	Playlists      int
+	ClipInfos      int
+	Streams        int
+	Completed      int
+	Total          int
+	TotalBytes     uint64
+	ProcessedBytes uint64
+	Elapsed        time.Duration
+	OccurredAt     time.Time
 }
 
 // Settings are library-facing scan and report controls.
@@ -156,11 +164,32 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		Path:       options.Path,
 		OccurredAt: time.Now(),
 	})
-	scan := rom.Scan()
+	var scan bdrom.ScanResult
+	if options.OnProgress != nil {
+		scan = rom.ScanWithProgress(func(update bdrom.ScanProgress) {
+			stage, ok := stageFromScanProgress(update.Stage)
+			if !ok {
+				return
+			}
+			emit(options.OnProgress, ProgressEvent{
+				Stage:          stage,
+				Path:           options.Path,
+				Completed:      update.Completed,
+				Total:          update.Total,
+				ProcessedBytes: update.ProcessedBytes,
+				TotalBytes:     update.TotalBytes,
+				OccurredAt:     time.Now(),
+			})
+		})
+	} else {
+		scan = rom.Scan()
+	}
 
 	emit(options.OnProgress, ProgressEvent{
 		Stage:      StageScanComplete,
 		Path:       options.Path,
+		Completed:  1,
+		Total:      1,
 		Elapsed:    time.Since(start),
 		OccurredAt: time.Now(),
 	})
@@ -202,6 +231,21 @@ func Run(ctx context.Context, options Options) (Result, error) {
 func emit(cb func(ProgressEvent), event ProgressEvent) {
 	if cb != nil {
 		cb(event)
+	}
+}
+
+func stageFromScanProgress(stage bdrom.ScanProgressStage) (Stage, bool) {
+	switch stage {
+	case bdrom.ScanStageClipInfo:
+		return StageClipInfo, true
+	case bdrom.ScanStagePlaylist:
+		return StagePlaylist, true
+	case bdrom.ScanStageStream:
+		return StageStream, true
+	case bdrom.ScanStageInitialize:
+		return StageInitialize, true
+	default:
+		return "", false
 	}
 }
 

@@ -535,6 +535,10 @@ func (s *StreamFile) DisplayName(settings settings.Settings) string {
 }
 
 func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
+	return s.ScanWithProgress(playlists, full, nil)
+}
+
+func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBytesProcessed func(uint64)) error {
 	if s.FileInfo == nil {
 		return nil
 	}
@@ -940,6 +944,9 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	}
 
 	processPacket(first[:packetSize])
+	if onBytesProcessed != nil {
+		onBytesProcessed(uint64(packetSize))
+	}
 
 	// Match official BDInfo behavior/perf: read large chunks and then walk packets.
 	// (Official uses ~5MB chunks; keep ours aligned to TS packet size.)
@@ -968,6 +975,9 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 		aligned := n - (n % packetSize)
 		for i := 0; i+packetSize <= aligned; i += packetSize {
 			processPacket(buf[i : i+packetSize])
+		}
+		if onBytesProcessed != nil && aligned > 0 {
+			onBytesProcessed(uint64(aligned))
 		}
 
 		// Preserve remainder bytes for next read.
