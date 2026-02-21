@@ -13,9 +13,8 @@ import (
 	"github.com/creativeprojects/go-selfupdate"
 	"github.com/spf13/cobra"
 
-	"github.com/autobrr/go-bdinfo/internal/bdrom"
-	"github.com/autobrr/go-bdinfo/internal/report"
 	"github.com/autobrr/go-bdinfo/internal/settings"
+	bdinfo "github.com/autobrr/go-bdinfo/pkg/bdinfo"
 )
 
 var version = "dev"
@@ -275,7 +274,7 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := runForPath(opts.path, s, opts.progress); err != nil {
+	if err := runForPath(cmd.Context(), opts.path, s, opts.progress); err != nil {
 		return err
 	}
 	if s.ReportFileName == "-" {
@@ -321,10 +320,10 @@ func runSelfUpdate(ctx context.Context) error {
 	return nil
 }
 
-func runForPath(path string, settings settings.Settings, progress bool) error {
+func runForPath(ctx context.Context, path string, settings settings.Settings, progress bool) error {
 	lower := strings.ToLower(path)
 	if strings.HasSuffix(lower, ".iso") {
-		reportPath, err := scanAndReport(path, settings, progress)
+		reportPath, err := scanAndReport(ctx, path, settings, progress)
 		if err != nil {
 			return err
 		}
@@ -384,7 +383,7 @@ func runForPath(path string, settings settings.Settings, progress bool) error {
 				}
 				reports = append(reports, settings.ReportFileName)
 			}
-			reportPath, err := scanAndReport(target, settings, progress)
+			reportPath, err := scanAndReport(ctx, target, settings, progress)
 			if err != nil {
 				return err
 			}
@@ -418,7 +417,7 @@ func runForPath(path string, settings settings.Settings, progress bool) error {
 		return nil
 	}
 
-	reportPath, err := scanAndReport(path, settings, progress)
+	reportPath, err := scanAndReport(ctx, path, settings, progress)
 	if err != nil {
 		return err
 	}
@@ -428,39 +427,69 @@ func runForPath(path string, settings settings.Settings, progress bool) error {
 	return nil
 }
 
-func scanAndReport(path string, settings settings.Settings, progress bool) (string, error) {
-	rom, err := bdrom.New(path, settings)
-	if err != nil {
-		return "", err
-	}
-	defer rom.Close()
-
-	start := time.Now()
+func scanAndReport(ctx context.Context, path string, settings settings.Settings, progress bool) (string, error) {
 	if progress {
 		fmt.Fprintf(os.Stderr, "Scanning: %s\n", path)
-		fmt.Fprintf(os.Stderr, "Found %d playlists, %d clip infos, %d streams\n", len(rom.PlaylistFiles), len(rom.StreamClipFiles), len(rom.StreamFiles))
 	}
 
-	result := rom.Scan()
-
-	playlists := make([]*bdrom.PlaylistFile, 0, len(rom.PlaylistFiles))
-	if len(rom.PlaylistOrder) > 0 {
-		for _, name := range rom.PlaylistOrder {
-			if pl, ok := rom.PlaylistFiles[name]; ok {
-				playlists = append(playlists, pl)
+	start := time.Now()
+	result, err := bdinfo.Run(ctx, bdinfo.Options{
+		Path:     path,
+		Settings: toLibrarySettings(settings),
+		OnProgress: func(event bdinfo.ProgressEvent) {
+			if !progress {
+				return
 			}
-		}
-	} else {
-		for _, pl := range rom.PlaylistFiles {
-			playlists = append(playlists, pl)
-		}
-	}
-	reportPath, err := report.WriteReport("", rom, playlists, result, settings)
+			if event.Stage == bdinfo.StageDiscovered {
+				fmt.Fprintf(os.Stderr, "Found %d playlists, %d clip infos, %d streams\n", event.Playlists, event.ClipInfos, event.Streams)
+			}
+		},
+	})
 	if err != nil {
 		return "", err
 	}
+
+	if err := writeReport(result.ReportPath, result.Report); err != nil {
+		return "", err
+	}
+
 	if progress {
 		fmt.Fprintf(os.Stderr, "Scan complete in %s\n", time.Since(start).Round(time.Millisecond))
 	}
-	return reportPath, nil
+
+	return result.ReportPath, nil
+}
+
+func toLibrarySettings(s settings.Settings) bdinfo.Settings {
+	return bdinfo.Settings{
+		GenerateStreamDiagnostics: s.GenerateStreamDiagnostics,
+		ExtendedStreamDiagnostics: s.ExtendedStreamDiagnostics,
+		EnableSSIF:                s.EnableSSIF,
+		BigPlaylistOnly:           s.BigPlaylistOnly,
+		FilterLoopingPlaylists:    s.FilterLoopingPlaylists,
+		FilterShortPlaylists:      s.FilterShortPlaylists,
+		FilterShortPlaylistsVal:   s.FilterShortPlaylistsVal,
+		KeepStreamOrder:           s.KeepStreamOrder,
+		GenerateTextSummary:       s.GenerateTextSummary,
+		ReportFileName:            s.ReportFileName,
+		IncludeVersionAndNotes:    s.IncludeVersionAndNotes,
+		GroupByTime:               s.GroupByTime,
+		ForumsOnly:                s.ForumsOnly,
+		MainPlaylistOnly:          s.MainPlaylistOnly,
+		SummaryOnly:               s.SummaryOnly,
+	}
+}
+
+func writeReport(reportPath string, output string) error {
+	if reportPath == "-" {
+		_, err := os.Stdout.WriteString(output)
+		return err
+	}
+
+	if _, err := os.Stat(reportPath); err == nil {
+		backup := fmt.Sprintf("%s.%d", reportPath, time.Now().Unix())
+		_ = os.Rename(reportPath, backup)
+	}
+
+	return os.WriteFile(reportPath, []byte(output), 0o644)
 }

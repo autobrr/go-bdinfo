@@ -19,6 +19,27 @@ import (
 const productVersion = "0.8.0.0"
 
 func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, scan bdrom.ScanResult, settings settings.Settings) (string, error) {
+	reportName, output, err := RenderReport(path, bd, playlists, scan, settings)
+	if err != nil {
+		return "", err
+	}
+
+	if reportName != "-" {
+		if _, err := os.Stat(reportName); err == nil {
+			backup := fmt.Sprintf("%s.%d", reportName, time.Now().Unix())
+			_ = os.Rename(reportName, backup)
+		}
+	}
+
+	if reportName == "-" {
+		_, err := os.Stdout.WriteString(output)
+		return reportName, err
+	}
+
+	return reportName, os.WriteFile(reportName, []byte(output), 0o644)
+}
+
+func RenderReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, scan bdrom.ScanResult, settings settings.Settings) (string, string, error) {
 	reportName := settings.ReportFileName
 	if strings.Contains(reportName, "{0}") {
 		reportName = strings.ReplaceAll(reportName, "{0}", bd.VolumeLabel)
@@ -33,20 +54,9 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 		reportName = path
 	}
 
-	if reportName != "-" {
-		if _, err := os.Stat(reportName); err == nil {
-			backup := fmt.Sprintf("%s.%d", reportName, time.Now().Unix())
-			_ = os.Rename(reportName, backup)
-		}
-	}
-
 	if settings.SummaryOnly {
 		output := buildSummaryOnly(bd, playlists, settings)
-		if reportName == "-" {
-			_, err := os.Stdout.WriteString(output)
-			return reportName, err
-		}
-		return reportName, os.WriteFile(reportName, []byte(output), 0o644)
+		return reportName, output, nil
 	}
 
 	var b strings.Builder
@@ -507,11 +517,7 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 	} else if settings.ForumsOnly {
 		output = extractForumsBlocks(output)
 	}
-	if reportName == "-" {
-		_, err := os.Stdout.WriteString(output)
-		return reportName, err
-	}
-	return reportName, os.WriteFile(reportName, []byte(output), 0o644)
+	return reportName, output, nil
 }
 
 func selectMainPlaylist(playlists []*bdrom.PlaylistFile, settings settings.Settings) []*bdrom.PlaylistFile {

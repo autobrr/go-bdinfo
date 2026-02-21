@@ -52,6 +52,43 @@ Path is required (ISO file or Blu-ray folder).
 
 Report default: `BDInfo_{0}.bdinfo` (disc label substituted).
 
+## Library Usage
+
+Use the exported API package instead of importing `internal/*`:
+
+```go
+package main
+
+import (
+  "context"
+  "fmt"
+  "os"
+
+  "github.com/autobrr/go-bdinfo/pkg/bdinfo"
+)
+
+func main() {
+  settings := bdinfo.DefaultSettings(".")
+  result, err := bdinfo.Run(context.Background(), bdinfo.Options{
+    Path:     "/path/to/disc/or.iso",
+    Settings: settings,
+  })
+  if err != nil {
+    panic(err)
+  }
+  if result.ReportPath == "-" {
+    fmt.Print(result.Report)
+    return
+  }
+  _ = os.WriteFile(result.ReportPath, []byte(result.Report), 0o644)
+}
+```
+
+Notes:
+- `Run` processes a single disc path per call.
+- The API returns structured metadata (`Result.Disc`, `Result.Playlists`, `Result.Scan`) and rendered report content (`Result.Report`).
+- File writing is caller-owned.
+
 ## Options
 
 - `-o, --reportfilename` (use `-` for stdout)
