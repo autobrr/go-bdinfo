@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/blang/semver"
@@ -16,6 +18,7 @@ import (
 	"github.com/autobrr/go-bdinfo/internal/bdrom"
 	"github.com/autobrr/go-bdinfo/internal/report"
 	"github.com/autobrr/go-bdinfo/internal/settings"
+	"github.com/autobrr/go-bdinfo/internal/util"
 )
 
 var version = "dev"
@@ -436,12 +439,19 @@ func scanAndReport(path string, settings settings.Settings, progress bool) (stri
 	defer rom.Close()
 
 	start := time.Now()
+	var progressPrinter *scanProgressPrinter
 	if progress {
 		fmt.Fprintf(os.Stderr, "Scanning: %s\n", path)
 		fmt.Fprintf(os.Stderr, "Found %d playlists, %d clip infos, %d streams\n", len(rom.PlaylistFiles), len(rom.StreamClipFiles), len(rom.StreamFiles))
+		progressPrinter = newScanProgressPrinter(os.Stderr)
 	}
 
-	result := rom.Scan()
+	var result bdrom.ScanResult
+	if progressPrinter != nil {
+		result = rom.ScanWithProgress(progressPrinter.Update)
+	} else {
+		result = rom.Scan()
+	}
 
 	playlists := make([]*bdrom.PlaylistFile, 0, len(rom.PlaylistFiles))
 	if len(rom.PlaylistOrder) > 0 {
@@ -460,7 +470,180 @@ func scanAndReport(path string, settings settings.Settings, progress bool) (stri
 		return "", err
 	}
 	if progress {
+		if progressPrinter != nil {
+			progressPrinter.Finish()
+		}
 		fmt.Fprintf(os.Stderr, "Scan complete in %s\n", time.Since(start).Round(time.Millisecond))
 	}
 	return reportPath, nil
+}
+
+type scanProgressPrinter struct {
+	mu             sync.Mutex
+	out            *os.File
+	lastStage      bdrom.ScanProgressStage
+	lastStreamEmit time.Time
+	streamStart    time.Time
+	lastStreamAt   time.Time
+	lastStreamByte uint64
+	streamRateBps  float64
+	lastLineLen    int
+}
+
+func newScanProgressPrinter(out *os.File) *scanProgressPrinter {
+	return &scanProgressPrinter{out: out}
+}
+
+func (p *scanProgressPrinter) Finish() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.lastLineLen > 0 {
+		fmt.Fprintln(p.out)
+		p.lastLineLen = 0
+	}
+}
+
+func (p *scanProgressPrinter) Update(update bdrom.ScanProgress) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	now := time.Now()
+	stageChanged := update.Stage != p.lastStage
+	if update.Stage == bdrom.ScanStageStream && p.streamStart.IsZero() {
+		p.streamStart = now
+		p.lastStreamAt = now
+		p.lastStreamByte = update.ProcessedBytes
+	}
+	if stageChanged {
+		if p.lastLineLen > 0 {
+			fmt.Fprintln(p.out)
+		}
+		p.lastStage = update.Stage
+	}
+
+	force := stageChanged || (update.Total > 0 && update.Completed >= update.Total) || update.Stage == bdrom.ScanStageComplete
+	if update.Stage == bdrom.ScanStageStream && !force && !p.lastStreamEmit.IsZero() && now.Sub(p.lastStreamEmit) < 250*time.Millisecond {
+		return
+	}
+
+	line := p.buildLine(update, now)
+	if line == "" {
+		return
+	}
+	padding := ""
+	if p.lastLineLen > len(line) {
+		padding = strings.Repeat(" ", p.lastLineLen-len(line))
+	}
+	fmt.Fprintf(p.out, "\r%s%s", line, padding)
+	p.lastLineLen = len(line)
+	if update.Stage == bdrom.ScanStageStream {
+		if !p.lastStreamAt.IsZero() {
+			deltaT := now.Sub(p.lastStreamAt).Seconds()
+			if deltaT > 0 {
+				deltaB := float64(update.ProcessedBytes - p.lastStreamByte)
+				if deltaB >= 0 {
+					inst := deltaB / deltaT
+					if p.streamRateBps <= 0 {
+						p.streamRateBps = inst
+					} else {
+						p.streamRateBps = (p.streamRateBps * 0.6) + (inst * 0.4)
+					}
+				}
+			}
+		}
+		p.lastStreamAt = now
+		p.lastStreamByte = update.ProcessedBytes
+		p.lastStreamEmit = now
+	}
+}
+
+func (p *scanProgressPrinter) buildLine(update bdrom.ScanProgress, now time.Time) string {
+	switch update.Stage {
+	case bdrom.ScanStageClipInfo:
+		return fmt.Sprintf("Clip info: %s (%d/%d)", formatPercent(update.Completed, update.Total), update.Completed, update.Total)
+	case bdrom.ScanStagePlaylist:
+		return fmt.Sprintf("Playlists: %s (%d/%d)", formatPercent(update.Completed, update.Total), update.Completed, update.Total)
+	case bdrom.ScanStageInitialize:
+		return fmt.Sprintf("Initialize: %s (%d/%d)", formatPercent(update.Completed, update.Total), update.Completed, update.Total)
+	case bdrom.ScanStageStream:
+		eta := "--:--"
+		readSpeed := "--"
+		if p.streamRateBps > 0 {
+			readSpeed = formatReadSpeed(p.streamRateBps)
+		}
+		if update.TotalBytes > 0 && update.ProcessedBytes > 0 && update.ProcessedBytes < update.TotalBytes {
+			elapsed := now.Sub(p.streamStart).Seconds()
+			if elapsed > 0 {
+				// ETA uses overall average throughput to reduce jitter from short-term read-rate swings.
+				rate := float64(update.ProcessedBytes) / elapsed
+				if rate > 0 {
+					remaining := float64(update.TotalBytes - update.ProcessedBytes)
+					eta = formatETA(time.Duration(math.Round((remaining / rate) * float64(time.Second))))
+				}
+			}
+		}
+		return fmt.Sprintf(
+			"Stream scan: %s (%s / %s, files %d/%d, read %s, ETA %s)",
+			formatBytePercent(update.ProcessedBytes, update.TotalBytes),
+			util.FormatFileSize(float64(update.ProcessedBytes), true),
+			util.FormatFileSize(float64(update.TotalBytes), true),
+			update.Completed,
+			update.Total,
+			readSpeed,
+			eta,
+		)
+	case bdrom.ScanStageComplete:
+		return "Scan stages complete: 100%"
+	default:
+		return ""
+	}
+}
+
+func formatPercent(completed int, total int) string {
+	if total <= 0 {
+		return "100.0%"
+	}
+	pct := (float64(completed) / float64(total)) * 100
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	return fmt.Sprintf("%.1f%%", pct)
+}
+
+func formatBytePercent(processed uint64, total uint64) string {
+	if total == 0 {
+		return "100.0%"
+	}
+	pct := (float64(processed) / float64(total)) * 100
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	return fmt.Sprintf("%.1f%%", pct)
+}
+
+func formatETA(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	totalSeconds := int(d.Round(time.Second).Seconds())
+	hours := totalSeconds / 3600
+	minutes := (totalSeconds % 3600) / 60
+	seconds := totalSeconds % 60
+	if hours > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
+	}
+	return fmt.Sprintf("%02d:%02d", minutes, seconds)
+}
+
+func formatReadSpeed(bytesPerSecond float64) string {
+	if bytesPerSecond <= 0 {
+		return "--"
+	}
+	return fmt.Sprintf("%s/s", util.FormatFileSize(bytesPerSecond, true))
 }
