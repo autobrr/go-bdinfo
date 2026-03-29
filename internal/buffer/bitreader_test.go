@@ -114,6 +114,16 @@ func TestBitReader_ReadExpGolomb(t *testing.T) {
 	}
 }
 
+func TestBitReader_ReadUE_RejectsOverwideCode(t *testing.T) {
+	data := append(bytes.Repeat([]byte{0x00}, 8), 0x80)
+	data = append(data, bytes.Repeat([]byte{0x00}, 8)...)
+
+	br := NewBitReader(data)
+	if _, ok := br.ReadUE(); ok {
+		t.Fatal("ReadUE() succeeded for an Exp-Golomb code wider than uint64")
+	}
+}
+
 func TestBitReader_ReadSignedExpGolomb(t *testing.T) {
 	tests := []struct {
 		name     string

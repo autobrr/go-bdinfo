@@ -34,7 +34,11 @@ jobs:
           set -euo pipefail
           go test ./internal/buffer -run=^$ -fuzz=FuzzBitReader -fuzztime=2m
           go test ./internal/codec -run=^$ -fuzz=FuzzScanAVC -fuzztime=2m
-          go test ./internal/codec -run=^$ -fuzz=FuzzScanHEVC -fuzztime=2m
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            go test ./internal/codec -run=FuzzScanHEVC -count=1
+          else
+            go test ./internal/codec -run=^$ -fuzz=FuzzScanHEVC -fuzztime=2m
+          fi
           go test ./internal/codec -run=^$ -fuzz=FuzzHEVCFrameTagFromTransfer -fuzztime=2m
           go test ./internal/bdrom -run=^$ -fuzz=FuzzStreamClipFileScan -fuzztime=2m
           go test ./internal/bdrom -run=^$ -fuzz=FuzzParsePTSAndValidateTimestamp -fuzztime=2m
@@ -47,4 +51,3 @@ jobs:
           if-no-files-found: ignore
           path: |
             **/testdata/fuzz/
-

@@ -1,5 +1,7 @@
 package buffer
 
+const maxExpGolombLeadingZeros = 63
+
 // BitReader reads MSB-first bits from a byte slice.
 type BitReader struct {
 	data    []byte
@@ -184,6 +186,9 @@ func (r *BitReader) ReadUE() (uint64, bool) {
 		}
 		if bit == 0 {
 			zeros++
+			if zeros > maxExpGolombLeadingZeros {
+				return 0, false
+			}
 			continue
 		}
 		break

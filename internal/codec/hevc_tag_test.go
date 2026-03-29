@@ -1,6 +1,9 @@
 package codec
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 func TestHEVCFrameTagFromTransfer_InitializedVsUninitialized(t *testing.T) {
 	// Build an Annex-B transfer with two slice NAL units:
@@ -48,5 +51,15 @@ func TestHEVCFrameTagFromTransfer_InitializedVsUninitialized(t *testing.T) {
 	}
 	if got := HEVCFrameTagFromTransfer(&st, transfer, false); got != "" {
 		t.Fatalf("uninitialized: got %q, want empty", got)
+	}
+}
+
+func TestHEVCTagBitReader_ReadUE_RejectsOverwideCode(t *testing.T) {
+	data := append(bytes.Repeat([]byte{0x00}, 8), 0x80)
+	data = append(data, bytes.Repeat([]byte{0x00}, 8)...)
+
+	br := newHEVCTagBitReader(data)
+	if _, ok := br.ReadUE(false); ok {
+		t.Fatal("ReadUE() succeeded for an Exp-Golomb code wider than uint64")
 	}
 }

@@ -346,6 +346,9 @@ func (r *hevcTagBitReader) ReadUE(skipEmulation bool) (uint64, bool) {
 		}
 		if b == 0 {
 			zeros++
+			if zeros > 63 {
+				return 0, false
+			}
 			continue
 		}
 		break
