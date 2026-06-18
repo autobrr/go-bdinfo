@@ -97,7 +97,7 @@ Notes:
 - `-f, --forumsonly` (only forums paste block)
 - `-s, --summaryonly` (only quick summary block; likely what you want)
 - `-b, --enablessif` (default on; use `--enablessif=false` to disable)
-- `-l, --filterloopingplaylists`
+- `-l, --filterloopingplaylists` (default on; use `--filterloopingplaylists=false` to disable)
 - `-y, --filtershortplaylist` (default on; use `--filtershortplaylist=false` to disable)
 - `-v, --filtershortplaylistvalue` (seconds)
 - `-k, --keepstreamorder`

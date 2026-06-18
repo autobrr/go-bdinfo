@@ -78,6 +78,7 @@ func TestWriteReport_StreamDiagnosticsHiddenStreamsLast(t *testing.T) {
 	playlist := &bdrom.PlaylistFile{
 		Name:            "00001.MPLS",
 		Settings:        cfg,
+		IsInitialized:   true,
 		HasHiddenTracks: true,
 		Streams: map[uint16]stream.Info{
 			0x1011: primaryVideo,
@@ -85,12 +86,14 @@ func TestWriteReport_StreamDiagnosticsHiddenStreamsLast(t *testing.T) {
 			0x1100: audio,
 			0x12A0: graphics,
 		},
+		// Length must clear the short-playlist threshold (20s) so the playlist is
+		// valid; the default now filters short/looping playlists like upstream.
 		StreamClips: []*bdrom.StreamClip{
 			{
 				Settings:    cfg,
 				Name:        "00007.M2TS",
-				Length:      10.0,
-				PacketCount: 11_600,
+				Length:      30.0,
+				PacketCount: 34_800,
 				StreamFile:  streamFile,
 			},
 		},

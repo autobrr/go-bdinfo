@@ -121,7 +121,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&opts.autoSaveReport, "autosavereport", "a", false, "Auto save report (compat)")
 	// No short flag: `-f` is already used by `--forumsonly` in this CLI.
 	rootCmd.Flags().BoolVar(&opts.generateFrameData, "generateframedatafile", false, "Generate frame data file (compat)")
-	rootCmd.Flags().BoolVarP(&opts.filterLooping, "filterloopingplaylists", "l", false, "Filter looping playlists")
+	rootCmd.Flags().BoolVarP(&opts.filterLooping, "filterloopingplaylists", "l", false, "Filter looping playlists (default on; use --filterloopingplaylists=false to disable)")
 	rootCmd.Flags().BoolVarP(&opts.filterShort, "filtershortplaylist", "y", false, "Filter short playlists (default on; use --filtershortplaylist=false to disable)")
 	rootCmd.Flags().IntVarP(&opts.filterShortValue, "filtershortplaylistvalue", "v", 20, "Short playlist length threshold in seconds")
 	rootCmd.Flags().BoolVarP(&opts.useImagePrefix, "useimageprefix", "i", false, "Use image prefix (compat)")

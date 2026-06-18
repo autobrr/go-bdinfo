@@ -28,7 +28,7 @@ func Default(reportBaseDir string) Settings {
 		ExtendedStreamDiagnostics: false,
 		EnableSSIF:                true,
 		BigPlaylistOnly:           false,
-		FilterLoopingPlaylists:    false,
+		FilterLoopingPlaylists:    true,
 		FilterShortPlaylists:      true,
 		FilterShortPlaylistsVal:   20,
 		KeepStreamOrder:           false,
