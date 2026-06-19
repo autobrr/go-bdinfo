@@ -82,9 +82,46 @@ func NewCustomPlaylist(name string, clips []*StreamClip, settings settings.Setti
 	return pl
 }
 
+// clipRefKey identifies a physically-identical clip reference: same source file
+// and same in/out point (and angle). A looping menu/"play-all" playlist references
+// the exact same clip many times; for byte accounting we count each unique clip
+// once instead of once per loop iteration, otherwise Size/Total Bitrate balloon far
+// past the disc size (issue #16). Length is intentionally NOT de-duplicated -- the
+// playlist genuinely plays that long, matching upstream BDInfo.
+//
+// This deliberately diverges from upstream BDInfo (which sums bytes per iteration).
+// For non-looping playlists no references collide, so behavior is unchanged.
+type clipRefKey struct {
+	name    string
+	timeIn  float64
+	timeOut float64
+	angle   int
+}
+
+func newClipRefKey(clip *StreamClip) clipRefKey {
+	return clipRefKey{name: clip.Name, timeIn: clip.TimeIn, timeOut: clip.TimeOut, angle: clip.AngleIndex}
+}
+
+// uniqueClipRefs returns the playlist's clips with looping repetitions collapsed:
+// only the first reference of each physically-identical clip (see clipRefKey) is
+// kept. Order is preserved. Used for byte/size accounting, not length.
+func (p *PlaylistFile) uniqueClipRefs() []*StreamClip {
+	seen := make(map[clipRefKey]struct{}, len(p.StreamClips))
+	unique := make([]*StreamClip, 0, len(p.StreamClips))
+	for _, clip := range p.StreamClips {
+		key := newClipRefKey(clip)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, clip)
+	}
+	return unique
+}
+
 func (p *PlaylistFile) FileSize() uint64 {
 	var size uint64
-	for _, clip := range p.StreamClips {
+	for _, clip := range p.uniqueClipRefs() {
 		size += clip.FileSize
 	}
 	return size
@@ -92,7 +129,7 @@ func (p *PlaylistFile) FileSize() uint64 {
 
 func (p *PlaylistFile) InterleavedFileSize() uint64 {
 	var size uint64
-	for _, clip := range p.StreamClips {
+	for _, clip := range p.uniqueClipRefs() {
 		size += clip.InterleavedFileSize
 	}
 	return size
@@ -118,7 +155,7 @@ func (p *PlaylistFile) TotalAngleLength() float64 {
 
 func (p *PlaylistFile) TotalSize() uint64 {
 	var size uint64
-	for _, clip := range p.StreamClips {
+	for _, clip := range p.uniqueClipRefs() {
 		if clip.AngleIndex == 0 {
 			size += clip.PacketSize()
 		}
@@ -128,7 +165,7 @@ func (p *PlaylistFile) TotalSize() uint64 {
 
 func (p *PlaylistFile) TotalAngleSize() uint64 {
 	var size uint64
-	for _, clip := range p.StreamClips {
+	for _, clip := range p.uniqueClipRefs() {
 		size += clip.PacketSize()
 	}
 	return size
