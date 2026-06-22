@@ -1,6 +1,55 @@
 package codec
 
-import "github.com/autobrr/go-bdinfo/internal/buffer"
+import (
+	"bytes"
+
+	"github.com/autobrr/go-bdinfo/internal/buffer"
+)
+
+// startCode3 is the 3-byte Annex-B start-code prefix (00 00 01) shared by both
+// the 3-byte and 4-byte (00 00 00 01) start-code forms.
+var startCode3 = []byte{0x00, 0x00, 0x01}
+
+// nextStartCode finds the next Annex-B start code at or after start within data
+// and returns its index and length (3 or 4), or (-1, 0) when none is found.
+//
+// It is byte-for-byte equivalent to the original linear scan
+//
+//	for i := start; i+3 < len(data); i++ {
+//		if data[i] != 0 || data[i+1] != 0 { continue }
+//		if data[i+2] == 1 { return i, 3 }
+//		if i+3 < len(data) && data[i+2] == 0 && data[i+3] == 1 { return i, 4 }
+//	}
+//
+// but uses bytes.Index for a vectorized search over the (often multi-KB) NAL
+// bodies between start codes, which dominated scan CPU in profiling. Equivalence
+// is enforced by FuzzNextStartCodeEquivalence.
+func nextStartCode(data []byte, start int) (int, int) {
+	if start < 0 {
+		start = 0
+	}
+	rel := bytes.Index(data[start:], startCode3)
+	if rel < 0 {
+		return -1, 0
+	}
+	p := start + rel
+	// 4-byte form 00 00 00 01: the 00 00 01 match at p is preceded by an extra
+	// 0x00. Its bound (p-1)+3 < len is always satisfied because the match exists
+	// at p (so p+2 < len). The p-1 >= start guard mirrors the original loop,
+	// which started at i=start and so reported a 3-byte code when the leading
+	// extra zero fell before start.
+	if p-1 >= start && data[p-1] == 0x00 {
+		return p - 1, 4
+	}
+	// 3-byte form requires p+3 < len(data) to match the original loop bound,
+	// which stopped at i+3 < len and never reported a start code in the final
+	// three bytes. bytes.Index already returns the earliest match, so if this
+	// one is out of range no earlier valid start code exists.
+	if p+3 < len(data) {
+		return p, 3
+	}
+	return -1, 0
+}
 
 // HEVCTagState holds the minimal HEVC state needed to derive BDInfo-compatible
 // per-transfer frame tags (I/P/B) for chapter diagnostics.
@@ -38,28 +87,12 @@ func HEVCFrameTagFromTransfer(state *HEVCTagState, data []byte, isInitialized bo
 		return ""
 	}
 
-	// Find next Annex-B start code; returns index and length (3 or 4).
-	nextStartCode := func(start int) (int, int) {
-		for i := start; i+3 < len(data); i++ {
-			if data[i] != 0x00 || data[i+1] != 0x00 {
-				continue
-			}
-			if data[i+2] == 0x01 {
-				return i, 3
-			}
-			if i+3 < len(data) && data[i+2] == 0x00 && data[i+3] == 0x01 {
-				return i, 4
-			}
-		}
-		return -1, 0
-	}
-
 	tag := ""
 
-	pos, scLen := nextStartCode(0)
+	pos, scLen := nextStartCode(data, 0)
 	for pos != -1 {
 		nalStart := pos + scLen
-		nextPos, nextLen := nextStartCode(nalStart)
+		nextPos, nextLen := nextStartCode(data, nalStart)
 		nalEnd := len(data)
 		if nextPos != -1 {
 			nalEnd = nextPos
