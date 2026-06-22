@@ -648,7 +648,11 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 		}
 	}
 	var unknownState *streamState
-	seenStreamOrder := make(map[uint16]struct{}, len(s.Streams))
+	// seenByPID tracks which PIDs have been recorded into scanStreamOrder. A bounded
+	// array (PID is 13-bit, < maxTSPID) instead of a map: this lookup runs once per TS
+	// packet — hundreds of millions of times on a feature scan — so the map's per-packet
+	// hash dominated CPU (~22% of scan CPU in profiling). Result order is unchanged.
+	var seenByPID [maxTSPID]bool
 	scanStreamOrder := make([]uint16, 0, len(s.Streams))
 	pmtStreamOrder := append([]uint16(nil), initialPMTOrder...)
 	defer func() {
@@ -687,8 +691,8 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 		}
 		known := st != nil
 		if known {
-			if _, ok := seenStreamOrder[pid]; !ok {
-				seenStreamOrder[pid] = struct{}{}
+			if !seenByPID[pidIdx] {
+				seenByPID[pidIdx] = true
 				scanStreamOrder = append(scanStreamOrder, pid)
 			}
 		}
