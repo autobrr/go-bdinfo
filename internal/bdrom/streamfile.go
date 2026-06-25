@@ -372,6 +372,9 @@ type streamState struct {
 	hevcTagBuf          []byte
 	hevcTagState        codec.HEVCTagState
 	hevcTagInitialized  bool
+	hevcScanner         codec.HEVCTagScanner
+	hevcTagResolved     bool
+	hevcResolvedTag     string
 	pesHeaderRemaining  int
 	pesHeaderExtraKnown bool
 	pesPacketRemaining  int
@@ -742,10 +745,30 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 					// Avoid stale tags: if we don't have any bytes for the prior transfer, treat it as no tag.
 					if state.hevcTagBuf == nil {
 						state.streamTag = ""
+					} else if state.hevcTagInitialized {
+						// Initialized mode: the tag was resolved incrementally while buffering
+						// (scan-while-buffer, see the append branch below). If a slice resolved,
+						// use the latched tag; otherwise finalize the scanner over the full buffer
+						// to finish SPS/PPS state and pick up any trailing slice. Byte-identical to
+						// HEVCFrameTagFromTransfer(&state.hevcTagState, buf, true) by construction
+						// (FuzzHEVCTagScannerEquivalence).
+						if state.hevcTagResolved {
+							state.streamTag = state.hevcResolvedTag
+						} else {
+							state.streamTag, _ = state.hevcScanner.Scan(&state.hevcTagState, state.hevcTagBuf, true)
+						}
+						state.hevcTagBuf = state.hevcTagBuf[:0]
 					} else {
-						state.streamTag = codec.HEVCFrameTagFromTransfer(&state.hevcTagState, state.hevcTagBuf, state.hevcTagInitialized)
+						// Uninitialized mode keeps the batch scan over the (up to 5MB) buffer: the
+						// "last slice wins" semantics need the whole transfer, so there is no early
+						// stop to exploit.
+						state.streamTag = codec.HEVCFrameTagFromTransfer(&state.hevcTagState, state.hevcTagBuf, false)
 						state.hevcTagBuf = state.hevcTagBuf[:0]
 					}
+					// Reset the per-transfer streaming scanner for the next transfer.
+					state.hevcScanner = codec.HEVCTagScanner{}
+					state.hevcTagResolved = false
+					state.hevcResolvedTag = ""
 					// Match BDInfo: HEVC tag scan switches to "initialized" behavior once an SPS has been seen.
 					if !state.hevcTagInitialized && state.hevcTagState.HasSPS() {
 						state.hevcTagInitialized = true
@@ -819,21 +842,43 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 		if state.collectDiagnostics && isVideo && len(payload) > 0 {
 			if vs, ok := st.(*stream.VideoStream); ok {
 				if vs.StreamType == stream.StreamTypeHEVCVideo {
-					if state.hevcTagBuf == nil {
+					if state.hevcTagInitialized {
+						// Initialized mode: scan while buffering and stop once the first slice tag
+						// resolves, so we copy only the payload up to that slice instead of the
+						// whole 64KB cap (the dominant per-frame memmove on HEVC UHD scans). Once
+						// resolved, skip further buffering/scanning for this transfer. The result
+						// is byte-identical to the batch scan (FuzzHEVCTagScannerEquivalence).
+						if !state.hevcTagResolved {
+							if state.hevcTagBuf == nil {
+								state.hevcTagBuf = make([]byte, 0, 64<<10)
+							}
+							if len(state.hevcTagBuf) < cap(state.hevcTagBuf) {
+								need := cap(state.hevcTagBuf) - len(state.hevcTagBuf)
+								if len(payload) > need {
+									state.hevcTagBuf = append(state.hevcTagBuf, payload[:need]...)
+								} else {
+									state.hevcTagBuf = append(state.hevcTagBuf, payload...)
+								}
+							}
+							if tag, ok := state.hevcScanner.Scan(&state.hevcTagState, state.hevcTagBuf, false); ok {
+								state.hevcTagResolved = true
+								state.hevcResolvedTag = tag
+							}
+						}
+					} else {
 						// Match BDInfo: before initialization, TSStreamBuffer captures up to 5MB
-						// and HEVC tag selection can depend on later slices overwriting earlier ones.
-						if state.hevcTagInitialized {
-							state.hevcTagBuf = make([]byte, 0, 64<<10)
-						} else {
+						// and HEVC tag selection can depend on later slices overwriting earlier ones,
+						// so the whole transfer is buffered and resolved by the batch scan.
+						if state.hevcTagBuf == nil {
 							state.hevcTagBuf = make([]byte, 0, 5*1024*1024)
 						}
-					}
-					if len(state.hevcTagBuf) < cap(state.hevcTagBuf) {
-						need := cap(state.hevcTagBuf) - len(state.hevcTagBuf)
-						if len(payload) > need {
-							state.hevcTagBuf = append(state.hevcTagBuf, payload[:need]...)
-						} else {
-							state.hevcTagBuf = append(state.hevcTagBuf, payload...)
+						if len(state.hevcTagBuf) < cap(state.hevcTagBuf) {
+							need := cap(state.hevcTagBuf) - len(state.hevcTagBuf)
+							if len(payload) > need {
+								state.hevcTagBuf = append(state.hevcTagBuf, payload[:need]...)
+							} else {
+								state.hevcTagBuf = append(state.hevcTagBuf, payload...)
+							}
 						}
 					}
 				} else if state.streamTag == "" {
