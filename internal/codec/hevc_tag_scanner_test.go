@@ -68,6 +68,51 @@ func TestHEVCTagScanner_MatchesBatch_AcrossSplits(t *testing.T) {
 	}
 }
 
+// scNAL prepends a 3-byte start code to a NAL body.
+func scNAL(nal ...byte) []byte { return append([]byte{0x00, 0x00, 0x01}, nal...) }
+
+// hevcSPSBytes / hevcPPSBytes / hevcSlice are minimal NAL bodies the real parsers
+// accept, used to build SPS->PPS->slice transfers that resolve to a non-empty tag.
+var (
+	// SPS (type 33): zero profile_tier_level (12 bytes) + sps_id ue(0) => spsValid[0]=true.
+	hevcSPSBytes = append([]byte{0x42, 0x01, 0x00}, append(make([]byte, 12), 0x80)...)
+	// PPS (type 34) body 0xE6 => pps_id 0, sps_id 0, dependent=1, output=0, extra=3.
+	hevcPPSBytes = []byte{0x44, 0x01, 0xE6}
+)
+
+// TestHEVCTagScanner_BoundaryStraddle is a regression guard for the peek-past-NAL bug:
+// a slice NAL whose slice_type Exp-Golomb code is truncated at the true NAL boundary
+// must yield the SAME tag as the batch oracle, even when the next start code's leading
+// 0x00 bytes follow it in the buffer. Before the fix, the early-resolve peek read those
+// out-of-NAL bytes and latched "B" while the batch path (which delimits the NAL at the
+// start code) yields "". The scanner must match the batch for every chunk split.
+func TestHEVCTagScanner_BoundaryStraddle(t *testing.T) {
+	// SPS, then PPS(extra=3) so slice_type sits just past the 1-byte slice body, then an
+	// IRAP slice (type 19, body 0xA1) whose slice_type ue needs a bit beyond the NAL,
+	// then a trailing non-first slice. Batch delimits the IRAP slice to [26 01 A1] -> "".
+	transfer := scNAL(hevcSPSBytes...)
+	transfer = append(transfer, scNAL(hevcPPSBytes...)...)
+	transfer = append(transfer, scNAL(0x26, 0x01, 0xA1)...)
+	transfer = append(transfer, scNAL(0x02, 0x01, 0x40)...)
+
+	var batchState HEVCTagState
+	want := HEVCFrameTagFromTransfer(&batchState, transfer, true)
+	if want != "" {
+		t.Fatalf("oracle sanity: a slice truncated at the NAL boundary must be null, got %q", want)
+	}
+
+	for chunk := 1; chunk <= len(transfer)+1; chunk++ {
+		var st HEVCTagState
+		got := feedScanner(&st, transfer, func(*uint32) int { return chunk })
+		if got != want {
+			t.Fatalf("chunk=%d: scanner tag %q != batch %q (peek read past the NAL boundary)", chunk, got, want)
+		}
+		if st != batchState {
+			t.Fatalf("chunk=%d: scanner state diverged from batch", chunk)
+		}
+	}
+}
+
 // FuzzHEVCTagScannerEquivalence is the correctness guarantee that keeps rendered
 // reports byte-identical: for arbitrary Annex-B input fed in arbitrary chunk splits,
 // the streaming scanner must produce the same tag AND the same final HEVCTagState as
@@ -87,6 +132,14 @@ func FuzzHEVCTagScannerEquivalence(f *testing.F) {
 		{0x00, 0x00, 0x01, 0x02, 0x01, 0xD8, 0x00, 0x00, 0x01, 0x02, 0x01, 0x40},
 		// 4-byte start codes interleaved with 3-byte.
 		{0x00, 0x00, 0x00, 0x01, 0x42, 0x01, 0xAA, 0x00, 0x00, 0x01, 0x02, 0x01, 0xD8},
+		// SPS -> PPS -> I slice with body so the resolved-tag ("I") path is exercised
+		// from a fresh state (parseHEVCPPS only validates a PPS whose SPS is valid, so
+		// the chain must include a real SPS first).
+		append(append(scNAL(hevcSPSBytes...), scNAL(hevcPPSBytes...)...),
+			scNAL(0x26, 0x01, 0xD8, 0x00)...),
+		// The boundary-straddle regression case (batch -> "", scanner must match).
+		append(append(scNAL(hevcSPSBytes...), scNAL(hevcPPSBytes...)...),
+			append(scNAL(0x26, 0x01, 0xA1), scNAL(0x02, 0x01, 0x40)...)...),
 	}
 	for _, s := range seeds {
 		for _, seed := range []uint32{1, 2, 3, 7, 0x1234} {

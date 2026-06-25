@@ -33,6 +33,9 @@ TARGETS=(
   "./internal/codec|FuzzScanAVC"
   "./internal/codec|FuzzScanHEVC"
   "./internal/codec|FuzzHEVCFrameTagFromTransfer"
+  "./internal/codec|FuzzHEVCTagScannerEquivalence"
+  "./internal/codec|FuzzNextStartCodeResumeEquivalence"
+  "./internal/codec|FuzzNextStartCodeEquivalence"
   "./internal/bdrom|FuzzStreamClipFileScan"
   "./internal/bdrom|FuzzParsePTSAndValidateTimestamp"
 )

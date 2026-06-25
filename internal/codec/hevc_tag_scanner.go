@@ -35,11 +35,13 @@ func applyHEVCNAL(state *HEVCTagState, nal []byte) (tag string, isDefault bool, 
 // peekHEVCSliceTag parses a still-growing trailing NAL as a slice WITHOUT mutating
 // state, so the scanner can resolve the common single-slice access unit (whose slice
 // is the last NAL, with no trailing start code) before the whole 64KB buffer is
-// copied. A non-null result is final: it depends only on the slice header at the
-// start of the NAL, so trailing bytes cannot change it (if the header is incomplete,
-// parseHEVCSliceTag returns "" and the caller waits for more bytes). SPS/PPS
-// (nal types 33/34) mutate state and so are deliberately never peeked — they are
-// only applied once fully delimited or at finalize.
+// copied. It depends only on the slice header at the start of the NAL, so a non-null
+// result is final PROVIDED the caller only feeds bytes that are committed to the NAL
+// — Scan enforces this by trimming the final 3 bytes of the buffer, which could still
+// turn out to be (the leading bytes of) the next start code. If the header is
+// incomplete, parseHEVCSliceTag returns "" and the caller waits for more bytes.
+// SPS/PPS (nal types 33/34) mutate state and so are deliberately never peeked — they
+// are only applied once fully delimited or at finalize.
 func peekHEVCSliceTag(state *HEVCTagState, nal []byte) string {
 	if len(nal) < 3 {
 		return ""
@@ -159,10 +161,19 @@ func (sc *HEVCTagScanner) Scan(state *HEVCTagState, buf []byte, finalize bool) (
 				// Early resolve: the trailing (not-yet-delimited) NAL is most often the
 				// single slice of the access unit. If it is a slice whose header is already
 				// buffered, resolve read-only and stop copying the rest of the transfer.
-				if t := peekHEVCSliceTag(state, buf[nalStart:]); t != "" {
-					sc.resolved = true
-					sc.tag = t
-					return sc.tag, true
+				//
+				// Peek only the bytes provably committed to this NAL: a start code
+				// completed by a byte that has not arrived yet can begin no earlier than
+				// len(buf)-3 (nextStartCode never recognizes a start code in the final 3
+				// bytes, and the 4-byte form backs up one zero). Peeking the final 3 bytes
+				// could read a leading 0x00 of the next start code and resolve a slice_type
+				// the batch path — which delimits the NAL at that start code — never sees.
+				if peekEnd := len(buf) - 3; peekEnd > nalStart {
+					if t := peekHEVCSliceTag(state, buf[nalStart:peekEnd]); t != "" {
+						sc.resolved = true
+						sc.tag = t
+						return sc.tag, true
+					}
 				}
 				sc.search = resumeOffset(len(buf), nalStart)
 				return "", false
