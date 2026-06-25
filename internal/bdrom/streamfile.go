@@ -388,6 +388,22 @@ type scanClipTarget struct {
 	streams map[uint16]stream.Info
 }
 
+// activeStreamEntry is a precomputed view of a scan's per-PID stream states, used
+// by the per-flush bitrate update. Building this slice once lets updateStreamBitrates
+// iterate active states without ranging the states map (and re-hashing s.Streams) on
+// every video DTS flush.
+//
+// isVideo is cached at build time, which makes "a stream's video-ness does not change
+// between the cache build and the bitrate flushes" a load-bearing invariant: it holds
+// today because s.Streams membership is fixed before the build and no StreamType
+// mutation runs during the scan loop. A future change that refines a stream's codec
+// mid-scan must rebuild or update this cache, or the wrong stream will be video-skipped.
+type activeStreamEntry struct {
+	pid     uint16
+	state   *streamState
+	isVideo bool
+}
+
 // clipTargetCursor narrows clip-target scans to time-overlapping clips while
 // preserving original target iteration order for deterministic updates.
 type clipTargetCursor struct {
@@ -619,14 +635,17 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 	}
 
 	states := make(map[uint16]*streamState, len(s.Streams)+1)
+	activeStates := make([]activeStreamEntry, 0, len(s.Streams)+1)
 	var stateByPID [maxTSPID]*streamState
 	var streamByPID [maxTSPID]stream.Info
 	for pid, st := range s.Streams {
 		dataCap := maxStreamDataOther
+		isVideo := false
 		if st != nil {
 			switch {
 			case st.Base().IsVideoStream():
 				dataCap = maxStreamDataVideo
+				isVideo = true
 			case st.Base().IsAudioStream():
 				dataCap = maxStreamDataAudio
 			}
@@ -637,6 +656,7 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 			collectDiagnostics: collectDiagnostics,
 		}
 		states[pid] = state
+		activeStates = append(activeStates, activeStreamEntry{pid: pid, state: state, isVideo: isVideo})
 		if int(pid) < maxTSPID {
 			streamByPID[int(pid)] = st
 			stateByPID[int(pid)] = state
@@ -686,6 +706,9 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 			if unknownState == nil {
 				unknownState = &streamState{pesPacketRemaining: -2, collectDiagnostics: collectDiagnostics}
 				states[unknownStatePID] = unknownState
+				// Mirror the map's lazy unknownState entry. isVideo=false matches the
+				// map version's "pid not in s.Streams -> never video-skip" branch.
+				activeStates = append(activeStates, activeStreamEntry{pid: unknownStatePID, state: unknownState, isVideo: false})
 			}
 			state = unknownState
 		}
@@ -795,7 +818,7 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 					}
 				}
 			}
-			s.parsePESHeaderTimestamp(state, isVideo, playlists, clipTargets, clipCursor, states, pid, &firstTS, &lastTS)
+			s.parsePESHeaderTimestamp(state, isVideo, playlists, clipTargets, clipCursor, activeStates, pid, &firstTS, &lastTS)
 		}
 		if len(payload) == 0 {
 			return
@@ -1009,7 +1032,7 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 			ptsLast = state.ptsLast
 			ptsDiff = int64(ptsLast) - int64(state.dtsPrev)
 		}
-		s.updateStreamBitrates(playlists, clipTargets, clipCursor, states, pid, ptsLast, ptsDiff)
+		s.updateStreamBitrates(playlists, clipTargets, clipCursor, activeStates, pid, ptsLast, ptsDiff)
 	}
 
 	for pid, st := range s.Streams {
@@ -1112,7 +1135,7 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 	return nil
 }
 
-func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, clipTargets []scanClipTarget, clipCursor *clipTargetCursor, states map[uint16]*streamState, pid uint16, state *streamState, ts uint64, dtsForLength uint64, isVideo bool, firstDTS *uint64, lastDTS *uint64) {
+func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, clipTargets []scanClipTarget, clipCursor *clipTargetCursor, activeStates []activeStreamEntry, pid uint16, state *streamState, ts uint64, dtsForLength uint64, isVideo bool, firstDTS *uint64, lastDTS *uint64) {
 	if ts == 0 {
 		return
 	}
@@ -1120,7 +1143,7 @@ func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, clipTargets []sc
 		diff := int64(ts) - int64(state.dtsPrev)
 		state.lastDiff = diff
 		if isVideo {
-			s.updateStreamBitrates(playlists, clipTargets, clipCursor, states, pid, ts, diff)
+			s.updateStreamBitrates(playlists, clipTargets, clipCursor, activeStates, pid, ts, diff)
 			// BDInfo computes TSStreamFile.Length using DTS (when present). For PES packets that
 			// only include PTS, BDInfo continues to use the last seen DTS and does not extend
 			// the file duration based on PTS-only timestamps.
@@ -1142,7 +1165,7 @@ func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, clipTargets []sc
 	state.tsCount++
 }
 
-func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, playlists []*PlaylistFile, clipTargets []scanClipTarget, clipCursor *clipTargetCursor, states map[uint16]*streamState, pid uint16, firstTS *uint64, lastTS *uint64) {
+func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, playlists []*PlaylistFile, clipTargets []scanClipTarget, clipCursor *clipTargetCursor, activeStates []activeStreamEntry, pid uint16, firstTS *uint64, lastTS *uint64) {
 	if !isVideo || state.pesHeaderParsed {
 		return
 	}
@@ -1157,7 +1180,7 @@ func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, p
 			state.ptsLast = pts
 		}
 		// For duration calculation, keep using the last DTS observed for this stream.
-		s.handleTimestamp(playlists, clipTargets, clipCursor, states, pid, state, pts, state.lastDTS, isVideo, firstTS, lastTS)
+		s.handleTimestamp(playlists, clipTargets, clipCursor, activeStates, pid, state, pts, state.lastDTS, isVideo, firstTS, lastTS)
 		state.pesHeaderParsed = true
 	case 3:
 		if len(state.pesHeaderBuf) < 19 {
@@ -1173,26 +1196,30 @@ func (s *StreamFile) parsePESHeaderTimestamp(state *streamState, isVideo bool, p
 		}
 		if dts > 0 {
 			state.lastDTS = dts
-			s.handleTimestamp(playlists, clipTargets, clipCursor, states, pid, state, dts, dts, isVideo, firstTS, lastTS)
+			s.handleTimestamp(playlists, clipTargets, clipCursor, activeStates, pid, state, dts, dts, isVideo, firstTS, lastTS)
 		}
 		state.pesHeaderParsed = true
 	}
 }
 
-func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, clipTargets []scanClipTarget, clipCursor *clipTargetCursor, states map[uint16]*streamState, ptsPID uint16, pts uint64, ptsDiff int64) {
+func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, clipTargets []scanClipTarget, clipCursor *clipTargetCursor, activeStates []activeStreamEntry, ptsPID uint16, pts uint64, ptsDiff int64) {
 	if playlists == nil {
 		return
 	}
-	for pid, state := range states {
+	// Iterate a precomputed slice of active states instead of ranging the states map
+	// (and re-hashing s.Streams) on every video DTS flush. isVideo is cached at build
+	// time; the only non-s.Streams entry (unknownState, PID 0xFFFF) carries isVideo=false,
+	// matching the map version's "pid not in s.Streams -> never video-skip" branch. Per-PID
+	// accumulators are disjoint, so slice order is output-equivalent to the map's random order.
+	for _, e := range activeStates {
+		state := e.state
 		if state.windowPackets == 0 {
 			continue
 		}
-		if base, ok := s.Streams[pid]; ok {
-			if base.Base().IsVideoStream() && pid != ptsPID {
-				continue
-			}
+		if e.isVideo && e.pid != ptsPID {
+			continue
 		}
-		s.updateStreamBitrate(clipTargets, clipCursor, pid, pts, ptsDiff, state)
+		s.updateStreamBitrate(clipTargets, clipCursor, e.pid, pts, ptsDiff, state)
 	}
 }
 
