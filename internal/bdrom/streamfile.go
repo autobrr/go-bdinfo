@@ -391,7 +391,13 @@ type scanClipTarget struct {
 // activeStreamEntry is a precomputed view of a scan's per-PID stream states, used
 // by the per-flush bitrate update. Building this slice once lets updateStreamBitrates
 // iterate active states without ranging the states map (and re-hashing s.Streams) on
-// every video DTS flush. isVideo is cached at build time.
+// every video DTS flush.
+//
+// isVideo is cached at build time, which makes "a stream's video-ness does not change
+// between the cache build and the bitrate flushes" a load-bearing invariant: it holds
+// today because s.Streams membership is fixed before the build and no StreamType
+// mutation runs during the scan loop. A future change that refines a stream's codec
+// mid-scan must rebuild or update this cache, or the wrong stream will be video-skipped.
 type activeStreamEntry struct {
 	pid     uint16
 	state   *streamState

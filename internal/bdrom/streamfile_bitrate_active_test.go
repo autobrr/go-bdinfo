@@ -94,6 +94,8 @@ type bitrateSnapshot struct {
 	streamBitrate map[uint16]int64
 	targetPayload map[uint16]uint64
 	targetPackets map[uint16]uint64
+	targetSeconds map[uint16]float64
+	targetBitrate map[uint16]int64
 	diagnostics   map[uint16][]StreamDiagnostics
 	windowPackets map[uint16]uint64
 }
@@ -106,6 +108,8 @@ func snapshotBitrateWorld(s *StreamFile, clipTargets []scanClipTarget, states ma
 		streamBitrate: map[uint16]int64{},
 		targetPayload: map[uint16]uint64{},
 		targetPackets: map[uint16]uint64{},
+		targetSeconds: map[uint16]float64{},
+		targetBitrate: map[uint16]int64{},
 		diagnostics:   map[uint16][]StreamDiagnostics{},
 		windowPackets: map[uint16]uint64{},
 	}
@@ -124,6 +128,8 @@ func snapshotBitrateWorld(s *StreamFile, clipTargets []scanClipTarget, states ma
 		b := info.Base()
 		snap.targetPayload[pid] = b.PayloadBytes
 		snap.targetPackets[pid] = b.PacketCount
+		snap.targetSeconds[pid] = b.PacketSeconds
+		snap.targetBitrate[pid] = b.ActiveBitRate
 	}
 	for pid, d := range s.StreamDiagnostics {
 		if len(d) > 0 {
@@ -139,7 +145,9 @@ func snapshotBitrateWorld(s *StreamFile, clipTargets []scanClipTarget, states ma
 // TestUpdateStreamBitrates_SliceMatchesMap proves the activeStates-slice version of
 // updateStreamBitrates is output-equivalent to the original map-ranging version across
 // every branch (ptsPID video, non-ptsPID video skip, audio, zero-window skip, and an
-// unknown PID not in s.Streams) and independent of iteration order.
+// unknown PID not in s.Streams) and independent of iteration order. It runs with both
+// clipCursor==nil (legacy branch) and a non-nil cursor (the branch production always
+// takes), snapshotting the cursor-only target PacketSeconds/ActiveBitRate writes too.
 func TestUpdateStreamBitrates_SliceMatchesMap(t *testing.T) {
 	seeds := []bitrateSeed{
 		{pid: 0x1011, known: true, video: true, windowBytes: 4096, windowPackets: 30}, // ptsPID video -> processed
@@ -153,19 +161,6 @@ func TestUpdateStreamBitrates_SliceMatchesMap(t *testing.T) {
 	const ptsDiff = int64(3000)
 	playlists := []*PlaylistFile{} // non-nil so updateStreamBitrates does not short-circuit
 
-	// Reference world: original map-ranging implementation.
-	sRef, ctRef, statesRef := buildBitrateWorld(seeds)
-	sRef.updateStreamBitratesMapRef(playlists, ctRef, nil, statesRef, ptsPID, pts, ptsDiff)
-	want := snapshotBitrateWorld(sRef, ctRef, statesRef)
-
-	// Sanity: the unknown PID and both processed streams must have flowed into the clip
-	// totals (otherwise the test would pass vacuously).
-	if want.clipPayload != 4096+800+512 || want.clipPackets != 30+6+4 {
-		t.Fatalf("reference world clip totals unexpected: payload=%d packets=%d", want.clipPayload, want.clipPackets)
-	}
-
-	// The new slice implementation must match the map reference for every permutation
-	// of the active-states order.
 	perms := [][]int{
 		{0, 1, 2, 3, 4},
 		{4, 3, 2, 1, 0},
@@ -173,17 +168,48 @@ func TestUpdateStreamBitrates_SliceMatchesMap(t *testing.T) {
 		{1, 3, 0, 4, 2},
 		{3, 0, 4, 2, 1},
 	}
-	for pi, perm := range perms {
-		ordered := make([]bitrateSeed, len(perm))
-		for i, idx := range perm {
-			ordered[i] = seeds[idx]
+
+	// cursorFor returns nil (legacy branch) or a fresh production cursor over the
+	// given world's targets, matching what ScanWithProgress builds.
+	for _, useCursor := range []bool{false, true} {
+		name := "cursor=nil"
+		if useCursor {
+			name = "cursor=production"
 		}
-		s2, ct2, states2 := buildBitrateWorld(seeds)
-		active := activeStatesFromSeeds(ordered, states2)
-		s2.updateStreamBitrates(playlists, ct2, nil, active, ptsPID, pts, ptsDiff)
-		got := snapshotBitrateWorld(s2, ct2, states2)
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("permutation %d %v: slice impl diverged from map reference\n got=%+v\nwant=%+v", pi, perm, got, want)
-		}
+		t.Run(name, func(t *testing.T) {
+			cursorFor := func(ct []scanClipTarget) *clipTargetCursor {
+				if !useCursor {
+					return nil
+				}
+				return newClipTargetCursor(ct)
+			}
+
+			// Reference world: original map-ranging implementation.
+			sRef, ctRef, statesRef := buildBitrateWorld(seeds)
+			sRef.updateStreamBitratesMapRef(playlists, ctRef, cursorFor(ctRef), statesRef, ptsPID, pts, ptsDiff)
+			want := snapshotBitrateWorld(sRef, ctRef, statesRef)
+
+			// Sanity: the unknown PID and both processed streams must have flowed into the
+			// clip totals (otherwise the test would pass vacuously).
+			if want.clipPayload != 4096+800+512 || want.clipPackets != 30+6+4 {
+				t.Fatalf("reference world clip totals unexpected: payload=%d packets=%d", want.clipPayload, want.clipPackets)
+			}
+
+			// The new slice implementation must match the map reference for every
+			// permutation of the active-states order.
+			for pi, perm := range perms {
+				ordered := make([]bitrateSeed, len(perm))
+				for i, idx := range perm {
+					ordered[i] = seeds[idx]
+				}
+				s2, ct2, states2 := buildBitrateWorld(seeds)
+				active := activeStatesFromSeeds(ordered, states2)
+				s2.updateStreamBitrates(playlists, ct2, cursorFor(ct2), active, ptsPID, pts, ptsDiff)
+				got := snapshotBitrateWorld(s2, ct2, states2)
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("permutation %d %v: slice impl diverged from map reference\n got=%+v\nwant=%+v", pi, perm, got, want)
+				}
+			}
+		})
 	}
 }
