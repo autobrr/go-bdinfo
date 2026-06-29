@@ -115,6 +115,50 @@ type Result struct {
 	ReportPath string
 }
 
+// DiscoverPlaylists opens the disc and returns playlist metadata without scanning stream files.
+// Faster than Run for discovery: scans CLPI and MPLS only, skips the expensive M2TS read.
+// The returned Result has Disc and Playlists populated; Report is always empty.
+func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
+	if options.Path == "" {
+		return Result{}, errors.New("path is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+
+	cfg := toInternalSettings(options.Settings)
+	rom, err := bdrom.New(options.Path, cfg)
+	if err != nil {
+		return Result{}, err
+	}
+	defer rom.Close()
+
+	if err := filterROMToPlaylist(rom, cfg.PlaylistOnly); err != nil {
+		return Result{}, err
+	}
+
+	emit(options.OnProgress, ProgressEvent{
+		Stage:      StageDiscovered,
+		Path:       options.Path,
+		Playlists:  len(rom.PlaylistFiles),
+		ClipInfos:  len(rom.StreamClipFiles),
+		Streams:    len(rom.StreamFiles),
+		OccurredAt: time.Now(),
+	})
+
+	scan := rom.ScanMetadata()
+
+	playlists := orderedPlaylists(rom)
+	return Result{
+		Disc:      buildDiscInfo(rom),
+		Playlists: buildPlaylistInfo(playlists),
+		Scan:      buildScanInfo(scan),
+	}, nil
+}
+
 // Run scans one path and returns structured output plus report content.
 // The API does not write files; callers own output persistence behavior.
 func Run(ctx context.Context, options Options) (Result, error) {

@@ -466,6 +466,82 @@ func (b *BDROM) Scan() ScanResult {
 	return b.ScanWithProgress(nil)
 }
 
+// ScanMetadata scans clip info and playlist files but skips the expensive M2TS stream scan.
+// Use for discovery when only playlist metadata (duration, size, validity) is needed.
+func (b *BDROM) ScanMetadata() ScanResult {
+	return b.ScanMetadataWithProgress(nil)
+}
+
+// ScanMetadataWithProgress is like ScanMetadata but emits progress events.
+func (b *BDROM) ScanMetadataWithProgress(progress ScanProgressFunc) ScanResult {
+	result := ScanResult{FileErrors: make(map[string]error)}
+	var errMu sync.Mutex
+	emit := func(update ScanProgress) {
+		if progress != nil {
+			progress(update)
+		}
+	}
+
+	clipFiles := orderedStreamClipFiles(b.StreamClipFiles)
+	emit(ScanProgress{Stage: ScanStageClipInfo, Total: len(clipFiles)})
+	var clipDone atomic.Int64
+	runParallel(clipFiles, scanWorkerLimit(len(clipFiles), 0), func(clip *StreamClipFile) error {
+		return clip.Scan()
+	}, func(_ *StreamClipFile) {
+		done := int(clipDone.Add(1))
+		emit(ScanProgress{Stage: ScanStageClipInfo, Completed: done, Total: len(clipFiles)})
+	}, func(clip *StreamClipFile, err error) {
+		errMu.Lock()
+		result.FileErrors[clip.Name] = err
+		errMu.Unlock()
+	})
+
+	for _, streamFile := range b.StreamFiles {
+		ssifName := strings.ToUpper(strings.TrimSuffix(streamFile.Name, ".M2TS") + ".SSIF")
+		if ssif, ok := b.InterleavedFiles[ssifName]; ok {
+			streamFile.InterleavedFile = ssif
+		}
+	}
+
+	playlists := orderedPlaylists(b.PlaylistFiles, b.PlaylistOrder)
+	emit(ScanProgress{Stage: ScanStagePlaylist, Total: len(playlists)})
+	var playlistDone atomic.Int64
+	runParallel(playlists, scanWorkerLimit(len(playlists), 0), func(playlist *PlaylistFile) error {
+		return playlist.Scan(b.StreamFiles, b.StreamClipFiles)
+	}, func(_ *PlaylistFile) {
+		done := int(playlistDone.Add(1))
+		emit(ScanProgress{Stage: ScanStagePlaylist, Completed: done, Total: len(playlists)})
+	}, func(playlist *PlaylistFile, err error) {
+		errMu.Lock()
+		result.FileErrors[playlist.Name] = err
+		errMu.Unlock()
+	})
+
+	emit(ScanProgress{Stage: ScanStageInitialize, Total: len(playlists)})
+	var initDone atomic.Int64
+	runParallel(playlists, scanWorkerLimit(len(playlists), 0), func(playlist *PlaylistFile) error {
+		playlist.Initialize()
+		return nil
+	}, func(_ *PlaylistFile) {
+		done := int(initDone.Add(1))
+		emit(ScanProgress{Stage: ScanStageInitialize, Completed: done, Total: len(playlists)})
+	}, nil)
+
+	for _, playlist := range playlists {
+		if b.Is50Hz {
+			continue
+		}
+		for _, vs := range playlist.VideoStreams {
+			if vs.FrameRate() == stream.FrameRate25 || vs.FrameRate() == stream.FrameRate50 {
+				b.Is50Hz = true
+			}
+		}
+	}
+
+	emit(ScanProgress{Stage: ScanStageComplete, Completed: 1, Total: 1})
+	return result
+}
+
 func (b *BDROM) ScanWithProgress(progress ScanProgressFunc) ScanResult {
 	result := ScanResult{FileErrors: make(map[string]error)}
 	var errMu sync.Mutex
