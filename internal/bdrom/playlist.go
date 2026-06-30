@@ -127,6 +127,26 @@ func (p *PlaylistFile) FileSize() uint64 {
 	return size
 }
 
+// MainAngleFileSize returns the sum of file sizes for angle-0 clips only, deduplicating
+// loop repetitions. Mirrors TotalSize() but uses filesystem sizes instead of packet counts.
+// Use as a metadata-only fallback when TotalSize() is zero and no M2TS scan was performed.
+func (p *PlaylistFile) MainAngleFileSize() uint64 {
+	seen := make(map[clipRefKey]struct{})
+	var size uint64
+	for _, clip := range p.StreamClips {
+		if clip.AngleIndex != 0 {
+			continue
+		}
+		key := newClipRefKey(clip)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		size += clip.FileSize
+	}
+	return size
+}
+
 func (p *PlaylistFile) InterleavedFileSize() uint64 {
 	var size uint64
 	for _, clip := range p.uniqueClipRefs() {

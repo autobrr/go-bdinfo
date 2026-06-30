@@ -535,12 +535,20 @@ func (b *BDROM) ScanMetadataWithProgress(progress ScanProgressFunc) ScanResult {
 	}, nil)
 
 	for _, playlist := range playlists {
-		if b.Is50Hz {
-			continue
-		}
+		vidCount := len(playlist.VideoStreams)
 		for _, vs := range playlist.VideoStreams {
-			if vs.FrameRate() == stream.FrameRate25 || vs.FrameRate() == stream.FrameRate50 {
+			if !b.Is50Hz && (vs.FrameRate() == stream.FrameRate25 || vs.FrameRate() == stream.FrameRate50) {
 				b.Is50Hz = true
+			}
+			if vidCount > 1 && b.Is3D {
+				if (vs.StreamType == stream.StreamTypeAVCVideo && playlist.MVCBaseViewR) ||
+					(vs.StreamType == stream.StreamTypeMVCVideo && !playlist.MVCBaseViewR) {
+					base := true
+					vs.BaseView = &base
+				} else if vs.StreamType == stream.StreamTypeAVCVideo || vs.StreamType == stream.StreamTypeMVCVideo {
+					base := false
+					vs.BaseView = &base
+				}
 			}
 		}
 	}

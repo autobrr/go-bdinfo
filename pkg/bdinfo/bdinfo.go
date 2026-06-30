@@ -168,10 +168,14 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 		scan = rom.ScanMetadata()
 	}
 
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+
 	playlists := orderedPlaylists(rom)
 	return Result{
 		Disc:      buildDiscInfo(rom),
-		Playlists: buildPlaylistInfo(playlists),
+		Playlists: buildPlaylistInfo(playlists, true),
 		Scan:      buildScanInfo(scan),
 	}, nil
 }
@@ -273,7 +277,7 @@ func Run(ctx context.Context, options Options) (Result, error) {
 
 	result := Result{
 		Disc:       buildDiscInfo(rom),
-		Playlists:  buildPlaylistInfo(playlists),
+		Playlists:  buildPlaylistInfo(playlists, false),
 		Scan:       buildScanInfo(scan),
 		Report:     reportText,
 		ReportPath: reportPath,
@@ -342,15 +346,15 @@ func buildDiscInfo(rom *bdrom.BDROM) DiscInfo {
 	}
 }
 
-func buildPlaylistInfo(playlists []*bdrom.PlaylistFile) []PlaylistInfo {
+func buildPlaylistInfo(playlists []*bdrom.PlaylistFile, metadataOnly bool) []PlaylistInfo {
 	out := make([]PlaylistInfo, 0, len(playlists))
 	for _, playlist := range playlists {
 		if playlist == nil {
 			continue
 		}
 		sizeBytes := playlist.TotalSize()
-		if sizeBytes == 0 {
-			sizeBytes = playlist.FileSize()
+		if sizeBytes == 0 && metadataOnly {
+			sizeBytes = playlist.MainAngleFileSize()
 		}
 		var totalBitrateBps uint64
 		if length := playlist.TotalLength(); length > 0 {
