@@ -149,7 +149,24 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 		OccurredAt: time.Now(),
 	})
 
-	scan := rom.ScanMetadata()
+	var scan bdrom.ScanResult
+	if options.OnProgress != nil {
+		scan = rom.ScanMetadataWithProgress(func(update bdrom.ScanProgress) {
+			stage, ok := stageFromScanProgress(update.Stage)
+			if !ok {
+				return
+			}
+			emit(options.OnProgress, ProgressEvent{
+				Stage:      stage,
+				Path:       options.Path,
+				Completed:  update.Completed,
+				Total:      update.Total,
+				OccurredAt: time.Now(),
+			})
+		})
+	} else {
+		scan = rom.ScanMetadata()
+	}
 
 	playlists := orderedPlaylists(rom)
 	return Result{
@@ -335,11 +352,15 @@ func buildPlaylistInfo(playlists []*bdrom.PlaylistFile) []PlaylistInfo {
 		if sizeBytes == 0 {
 			sizeBytes = playlist.FileSize()
 		}
+		var totalBitrateBps uint64
+		if length := playlist.TotalLength(); length > 0 {
+			totalBitrateBps = uint64(float64(sizeBytes) * 8.0 / length)
+		}
 		out = append(out, PlaylistInfo{
 			Name:            playlist.Name,
 			LengthSeconds:   playlist.TotalLength(),
 			SizeBytes:       sizeBytes,
-			TotalBitrateBps: playlist.TotalBitRate(),
+			TotalBitrateBps: totalBitrateBps,
 			HasHiddenTracks: playlist.HasHiddenTracks,
 			IsValid:         playlist.IsValid(),
 		})

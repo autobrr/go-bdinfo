@@ -476,6 +476,7 @@ func (b *BDROM) ScanMetadata() ScanResult {
 func (b *BDROM) ScanMetadataWithProgress(progress ScanProgressFunc) ScanResult {
 	result := ScanResult{FileErrors: make(map[string]error)}
 	var errMu sync.Mutex
+	var progressMu sync.Mutex
 	emit := func(update ScanProgress) {
 		if progress != nil {
 			progress(update)
@@ -488,6 +489,8 @@ func (b *BDROM) ScanMetadataWithProgress(progress ScanProgressFunc) ScanResult {
 	runParallel(clipFiles, scanWorkerLimit(len(clipFiles), 0), func(clip *StreamClipFile) error {
 		return clip.Scan()
 	}, func(_ *StreamClipFile) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
 		done := int(clipDone.Add(1))
 		emit(ScanProgress{Stage: ScanStageClipInfo, Completed: done, Total: len(clipFiles)})
 	}, func(clip *StreamClipFile, err error) {
@@ -509,6 +512,8 @@ func (b *BDROM) ScanMetadataWithProgress(progress ScanProgressFunc) ScanResult {
 	runParallel(playlists, scanWorkerLimit(len(playlists), 0), func(playlist *PlaylistFile) error {
 		return playlist.Scan(b.StreamFiles, b.StreamClipFiles)
 	}, func(_ *PlaylistFile) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
 		done := int(playlistDone.Add(1))
 		emit(ScanProgress{Stage: ScanStagePlaylist, Completed: done, Total: len(playlists)})
 	}, func(playlist *PlaylistFile, err error) {
@@ -523,6 +528,8 @@ func (b *BDROM) ScanMetadataWithProgress(progress ScanProgressFunc) ScanResult {
 		playlist.Initialize()
 		return nil
 	}, func(_ *PlaylistFile) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
 		done := int(initDone.Add(1))
 		emit(ScanProgress{Stage: ScanStageInitialize, Completed: done, Total: len(playlists)})
 	}, nil)
@@ -545,6 +552,7 @@ func (b *BDROM) ScanMetadataWithProgress(progress ScanProgressFunc) ScanResult {
 func (b *BDROM) ScanWithProgress(progress ScanProgressFunc) ScanResult {
 	result := ScanResult{FileErrors: make(map[string]error)}
 	var errMu sync.Mutex
+	var progressMu sync.Mutex
 	emit := func(update ScanProgress) {
 		if progress != nil {
 			progress(update)
@@ -557,6 +565,8 @@ func (b *BDROM) ScanWithProgress(progress ScanProgressFunc) ScanResult {
 	runParallel(clipFiles, scanWorkerLimit(len(clipFiles), 0), func(clip *StreamClipFile) error {
 		return clip.Scan()
 	}, func(_ *StreamClipFile) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
 		done := int(clipDone.Add(1))
 		emit(ScanProgress{Stage: ScanStageClipInfo, Completed: done, Total: len(clipFiles)})
 	}, func(clip *StreamClipFile, err error) {
@@ -578,6 +588,8 @@ func (b *BDROM) ScanWithProgress(progress ScanProgressFunc) ScanResult {
 	runParallel(playlists, scanWorkerLimit(len(playlists), 0), func(playlist *PlaylistFile) error {
 		return playlist.Scan(b.StreamFiles, b.StreamClipFiles)
 	}, func(_ *PlaylistFile) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
 		done := int(playlistDone.Add(1))
 		emit(ScanProgress{Stage: ScanStagePlaylist, Completed: done, Total: len(playlists)})
 	}, func(playlist *PlaylistFile, err error) {
@@ -607,17 +619,16 @@ func (b *BDROM) ScanWithProgress(progress ScanProgressFunc) ScanResult {
 	const streamEmitBytes = uint64(4 * 1024 * 1024)
 	const streamEmitInterval = 500 * time.Millisecond
 	emitStream := func(force bool) {
+		streamEmitMu.Lock()
+		defer streamEmitMu.Unlock()
 		processed := streamProcessed.Load()
 		done := int(streamDone.Load())
 		if !force {
-			streamEmitMu.Lock()
 			if processed < streamBytes && processed-lastStreamBytes < streamEmitBytes && (lastStreamEmit.IsZero() || time.Since(lastStreamEmit) < streamEmitInterval) {
-				streamEmitMu.Unlock()
 				return
 			}
 			lastStreamBytes = processed
 			lastStreamEmit = time.Now()
-			streamEmitMu.Unlock()
 		}
 		emit(ScanProgress{Stage: ScanStageStream, Completed: done, Total: len(streamFiles), ProcessedBytes: processed, TotalBytes: streamBytes})
 	}
@@ -645,6 +656,8 @@ func (b *BDROM) ScanWithProgress(progress ScanProgressFunc) ScanResult {
 		playlist.Initialize()
 		return nil
 	}, func(_ *PlaylistFile) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
 		done := int(initDone.Add(1))
 		emit(ScanProgress{Stage: ScanStageInitialize, Completed: done, Total: len(playlists)})
 	}, nil)
