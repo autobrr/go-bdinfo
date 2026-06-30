@@ -536,6 +536,9 @@ type AudioStream struct {
 	AudioMode     AudioMode
 	CoreStream    *AudioStream
 	ChannelLayout ChannelLayout
+	// ChannelLayoutText stores codec-derived speaker labels such as Dolby Tfl/Tfr
+	// or DTS Lh/Rh when the bitstream exposes more detail than BD playlist metadata.
+	ChannelLayoutText string
 }
 
 func ConvertSampleRate(rate SampleRate) int {
@@ -552,6 +555,10 @@ func ConvertSampleRate(rate SampleRate) int {
 }
 
 func (a *AudioStream) ChannelDescription() string {
+	if description := immersiveChannelDescription(a.ChannelLayoutText); description != "" {
+		return description
+	}
+
 	description := ""
 	if a.ChannelCount > 0 {
 		description += fmt.Sprintf("%d.%d", a.ChannelCount, a.LFE)
@@ -578,6 +585,32 @@ func (a *AudioStream) ChannelDescription() string {
 	}
 
 	return description
+}
+
+// immersiveChannelDescription renders layouts with explicit height speakers as bed.LFE.height.
+// Layouts without height speakers return empty string so legacy ChannelCount/LFE formatting is used.
+func immersiveChannelDescription(layout string) string {
+	if layout == "" {
+		return ""
+	}
+	bed, lfe, height := 0, 0, 0
+	for _, channel := range strings.Fields(layout) {
+		switch channel {
+		case "LFE", "LFE2":
+			lfe++
+		case "Tfc", "Tfl", "Tfr", "Tbl", "Tbr", "Tbc", "Tc",
+			"Vhc", "Vhl", "Vhr", "Ch", "Lh", "Rh", "Chr", "Lhr", "Rhr",
+			"Oh", "Lhs", "Rhs",
+			"Tsl", "Tsr", "Tls", "Trs":
+			height++
+		default:
+			bed++
+		}
+	}
+	if height == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d.%d.%d", bed, lfe, height)
 }
 
 func (a *AudioStream) Description() string {

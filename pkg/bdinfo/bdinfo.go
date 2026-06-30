@@ -115,6 +115,85 @@ type Result struct {
 	ReportPath string
 }
 
+// DiscoverPlaylists opens the disc and returns playlist metadata without scanning stream files.
+// Faster than Run for discovery: scans CLPI and MPLS only, skips the expensive M2TS read.
+// The returned Result has Disc and Playlists populated; Report is always empty.
+func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
+	if options.Path == "" {
+		return Result{}, errors.New("path is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+
+	cfg := toInternalSettings(options.Settings)
+	rom, err := bdrom.New(options.Path, cfg)
+	if err != nil {
+		return Result{}, err
+	}
+	defer rom.Close()
+
+	if err := filterROMToPlaylist(rom, cfg.PlaylistOnly); err != nil {
+		return Result{}, err
+	}
+
+	emit(options.OnProgress, ProgressEvent{
+		Stage:      StageDiscovered,
+		Path:       options.Path,
+		Playlists:  len(rom.PlaylistFiles),
+		ClipInfos:  len(rom.StreamClipFiles),
+		Streams:    len(rom.StreamFiles),
+		OccurredAt: time.Now(),
+	})
+
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+
+	start := time.Now()
+	var scan bdrom.ScanResult
+	if options.OnProgress != nil {
+		scan = rom.ScanMetadataWithProgress(func(update bdrom.ScanProgress) {
+			stage, ok := stageFromScanProgress(update.Stage)
+			if !ok {
+				return
+			}
+			emit(options.OnProgress, ProgressEvent{
+				Stage:      stage,
+				Path:       options.Path,
+				Completed:  update.Completed,
+				Total:      update.Total,
+				OccurredAt: time.Now(),
+			})
+		})
+	} else {
+		scan = rom.ScanMetadata()
+	}
+
+	emit(options.OnProgress, ProgressEvent{
+		Stage:      StageScanComplete,
+		Path:       options.Path,
+		Completed:  1,
+		Total:      1,
+		Elapsed:    time.Since(start),
+		OccurredAt: time.Now(),
+	})
+
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+
+	playlists := orderedPlaylists(rom)
+	return Result{
+		Disc:      buildDiscInfo(rom),
+		Playlists: buildPlaylistInfo(playlists, true),
+		Scan:      buildScanInfo(scan),
+	}, nil
+}
+
 // Run scans one path and returns structured output plus report content.
 // The API does not write files; callers own output persistence behavior.
 func Run(ctx context.Context, options Options) (Result, error) {
@@ -212,7 +291,7 @@ func Run(ctx context.Context, options Options) (Result, error) {
 
 	result := Result{
 		Disc:       buildDiscInfo(rom),
-		Playlists:  buildPlaylistInfo(playlists),
+		Playlists:  buildPlaylistInfo(playlists, false),
 		Scan:       buildScanInfo(scan),
 		Report:     reportText,
 		ReportPath: reportPath,
@@ -281,17 +360,25 @@ func buildDiscInfo(rom *bdrom.BDROM) DiscInfo {
 	}
 }
 
-func buildPlaylistInfo(playlists []*bdrom.PlaylistFile) []PlaylistInfo {
+func buildPlaylistInfo(playlists []*bdrom.PlaylistFile, metadataOnly bool) []PlaylistInfo {
 	out := make([]PlaylistInfo, 0, len(playlists))
 	for _, playlist := range playlists {
 		if playlist == nil {
 			continue
 		}
+		sizeBytes := playlist.TotalSize()
+		if sizeBytes == 0 && metadataOnly {
+			sizeBytes = playlist.MainAngleFileSize()
+		}
+		var totalBitrateBps uint64
+		if length := playlist.TotalLength(); length > 0 {
+			totalBitrateBps = uint64(float64(sizeBytes) * 8.0 / length)
+		}
 		out = append(out, PlaylistInfo{
 			Name:            playlist.Name,
 			LengthSeconds:   playlist.TotalLength(),
-			SizeBytes:       playlist.TotalSize(),
-			TotalBitrateBps: playlist.TotalBitRate(),
+			SizeBytes:       sizeBytes,
+			TotalBitrateBps: totalBitrateBps,
 			HasHiddenTracks: playlist.HasHiddenTracks,
 			IsValid:         playlist.IsValid(),
 		})
