@@ -149,6 +149,11 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 		OccurredAt: time.Now(),
 	})
 
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+
+	start := time.Now()
 	var scan bdrom.ScanResult
 	if options.OnProgress != nil {
 		scan = rom.ScanMetadataWithProgress(func(update bdrom.ScanProgress) {
@@ -167,6 +172,15 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 	} else {
 		scan = rom.ScanMetadata()
 	}
+
+	emit(options.OnProgress, ProgressEvent{
+		Stage:      StageScanComplete,
+		Path:       options.Path,
+		Completed:  1,
+		Total:      1,
+		Elapsed:    time.Since(start),
+		OccurredAt: time.Now(),
+	})
 
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
