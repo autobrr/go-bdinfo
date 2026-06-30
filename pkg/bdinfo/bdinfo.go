@@ -331,10 +331,14 @@ func buildPlaylistInfo(playlists []*bdrom.PlaylistFile) []PlaylistInfo {
 		if playlist == nil {
 			continue
 		}
+		sizeBytes := playlist.TotalSize()
+		if sizeBytes == 0 {
+			sizeBytes = playlist.FileSize()
+		}
 		out = append(out, PlaylistInfo{
 			Name:            playlist.Name,
 			LengthSeconds:   playlist.TotalLength(),
-			SizeBytes:       playlist.TotalSize(),
+			SizeBytes:       sizeBytes,
 			TotalBitrateBps: playlist.TotalBitRate(),
 			HasHiddenTracks: playlist.HasHiddenTracks,
 			IsValid:         playlist.IsValid(),
