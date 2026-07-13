@@ -78,6 +78,26 @@ func TestPlaylistFile_NonLoopingSizeUnchanged(t *testing.T) {
 	}
 }
 
+// MainAngleFileSize reports whole-file sizes, so multiple segment references into
+// the SAME physical .m2ts (seamless branching) must count that file exactly once —
+// unlike packet-based TotalSize, where distinct segments are genuinely distinct bytes.
+func TestPlaylistFile_MainAngleFileSizeCountsPhysicalFileOnce(t *testing.T) {
+	cfg := settings.Default(t.TempDir())
+	pl := &PlaylistFile{
+		Name:     "00110.MPLS",
+		Settings: cfg,
+		StreamClips: []*StreamClip{
+			{Settings: cfg, AngleIndex: 0, Name: "00110.M2TS", TimeIn: 0, TimeOut: 10, Length: 10, FileSize: 1000},
+			{Settings: cfg, AngleIndex: 0, Name: "00110.M2TS", TimeIn: 20, TimeOut: 30, Length: 10, FileSize: 1000},
+			{Settings: cfg, AngleIndex: 0, Name: "00111.M2TS", TimeIn: 0, TimeOut: 10, Length: 10, FileSize: 300},
+			{Settings: cfg, AngleIndex: 1, Name: "00112.M2TS", TimeIn: 0, TimeOut: 10, Length: 10, FileSize: 400},
+		},
+	}
+	if got, want := pl.MainAngleFileSize(), uint64(1000+300); got != want {
+		t.Errorf("MainAngleFileSize() = %d, want %d (same physical file counted once, other angles excluded)", got, want)
+	}
+}
+
 // Two references to the SAME file but DIFFERENT in/out points are distinct content
 // (not a loop) and must both be counted.
 func TestPlaylistFile_SameFileDifferentSegmentsBothCounted(t *testing.T) {
