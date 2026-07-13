@@ -92,9 +92,6 @@ func mergeAudioChannelLayouts(layouts ...string) string {
 }
 
 func orderedChannelLayout(seen map[string]bool) string {
-	if len(seen) == 0 {
-		return ""
-	}
 	parts := make([]string, 0, len(seen))
 	for _, ch := range channelLayoutOrder {
 		if seen[ch] {
@@ -110,16 +107,20 @@ func orderedChannelLayout(seen map[string]bool) string {
 
 // ScanAC3 updates audio metadata from the first usable AC-3 or E-AC-3 frames in data.
 //
-// For E-AC-3, the stream can require both an independent core frame and a later
-// dependent frame to expose Atmos/JOC metadata, expanded channel count, and embedded
-// AC3 core details. The scan stops once the stream reaches initialized state.
+// For E-AC-3, Atmos/JOC metadata, expanded channel count, and embedded core details
+// live in a dependent (strmtyp 1) frame that follows the independent frame. The walk
+// therefore continues past an initialized stream, but only onto dependent frames, so
+// no other frame kind can mutate already-initialized metadata.
 func ScanAC3(a *stream.AudioStream, data []byte) {
 	if a.IsInitialized {
 		return
 	}
 	for offset := findAC3Sync(data); offset >= 0 && offset+7 <= len(data); {
+		if a.IsInitialized && !isDependentEAC3Header(data[offset:]) {
+			return
+		}
 		frameSize, ok := scanAC3Frame(a, data[offset:])
-		if ok && a.IsInitialized {
+		if ok && a.IsInitialized && !(a.StreamType == stream.StreamTypeAC3PlusAudio && a.CoreStream == nil) {
 			return
 		}
 
@@ -138,6 +139,16 @@ func ScanAC3(a *stream.AudioStream, data []byte) {
 	}
 }
 
+// isDependentEAC3Header reports whether data starts with a dependent (strmtyp 1)
+// E-AC-3 frame header.
+func isDependentEAC3Header(data []byte) bool {
+	if len(data) < 6 || data[0] != 0x0b || data[1] != 0x77 {
+		return false
+	}
+	bsid := (data[5] & 0xF8) >> 3
+	return bsid > 10 && bsid <= 16 && data[2]>>6 == 1
+}
+
 // scanAC3Frame parses one sync-aligned AC-3 or E-AC-3 frame and returns its byte size.
 // It mutates a only with metadata found inside that frame; ok is false when the
 // frame header is absent, unsupported, or truncated.
@@ -149,7 +160,8 @@ func scanAC3Frame(a *stream.AudioStream, data []byte) (int, bool) {
 		return 0, false
 	}
 	frameSizeBytes, ok := ac3FrameSize(data)
-	if !ok {
+	if !ok || frameSizeBytes < 7 {
+		// A frame smaller than its own header (E-AC-3 frmsiz 0/1) is a false sync.
 		return 0, false
 	}
 	if len(data) < frameSizeBytes {
@@ -265,16 +277,22 @@ func scanAC3Frame(a *stream.AudioStream, data []byte) (int, bool) {
 			}
 		}
 		if frameType == 1 {
-			a.CoreStream = a.Clone().(*stream.AudioStream)
-			a.CoreStream.StreamType = stream.StreamTypeAC3Audio
+			// Only treat this as an extension of a previously parsed independent
+			// frame; a dependent frame seen first has no core to clone or extend.
+			if secondFrame {
+				a.CoreStream = a.Clone().(*stream.AudioStream)
+				a.CoreStream.StreamType = stream.StreamTypeAC3Audio
+			}
 			if readBool() {
 				chanmap := read(16)
-				a.ChannelCount = a.CoreStream.ChannelCount
-				a.ChannelCount += ac3ChanMap(uint16(chanmap))
-				if layout := eac3ChannelMapLayout(uint16(chanmap)); layout != "" {
-					a.ChannelLayoutText = mergeAudioChannelLayouts(a.CoreStream.ChannelLayoutText, layout)
+				if a.CoreStream != nil {
+					a.ChannelCount = a.CoreStream.ChannelCount
+					a.ChannelCount += ac3ChanMap(uint16(chanmap))
+					if layout := eac3ChannelMapLayout(uint16(chanmap)); layout != "" {
+						a.ChannelLayoutText = mergeAudioChannelLayouts(a.CoreStream.ChannelLayoutText, layout)
+					}
+					lfeOn = uint64(a.CoreStream.LFE)
 				}
-				lfeOn = uint64(a.CoreStream.LFE)
 			}
 		}
 
