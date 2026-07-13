@@ -108,20 +108,36 @@ func orderedChannelLayout(seen map[string]bool) string {
 // ScanAC3 updates audio metadata from the first usable AC-3 or E-AC-3 frames in data.
 //
 // For E-AC-3, Atmos/JOC metadata, expanded channel count, and embedded core details
-// live in a dependent (strmtyp 1) frame that follows the independent frame. The walk
-// therefore continues past an initialized stream, but only onto dependent frames, so
-// no other frame kind can mutate already-initialized metadata.
+// live in dependent (strmtyp 1) frames that follow the independent frame — up to
+// eight per access unit. The walk therefore merges every consecutive dependent frame
+// after the independent one and stops at the next independent frame, so no other
+// frame kind can mutate already-initialized metadata. Dependent frames seen before
+// any independent frame (a mid-access-unit start) are skipped, not parsed: their
+// extension data is meaningless without the frame they extend.
 func ScanAC3(a *stream.AudioStream, data []byte) {
 	if a.IsInitialized {
 		return
 	}
+	sawIndependent := false
 	for offset := findAC3Sync(data); offset >= 0 && offset+7 <= len(data); {
-		if a.IsInitialized && !isDependentEAC3Header(data[offset:]) {
+		dependent := isDependentEAC3Header(data[offset:])
+		if a.IsInitialized && !dependent {
 			return
 		}
-		frameSize, ok := scanAC3Frame(a, data[offset:])
-		if ok && a.IsInitialized && !(a.StreamType == stream.StreamTypeAC3PlusAudio && a.CoreStream == nil) {
-			return
+
+		var frameSize int
+		var ok bool
+		if dependent && !sawIndependent {
+			frameSize, ok = ac3FrameSize(data[offset:])
+			ok = ok && frameSize >= 7
+		} else {
+			frameSize, ok = scanAC3Frame(a, data[offset:], sawIndependent)
+			if ok && !dependent {
+				sawIndependent = true
+			}
+			if ok && a.IsInitialized && a.StreamType != stream.StreamTypeAC3PlusAudio {
+				return
+			}
 		}
 
 		next := offset + 2
@@ -151,8 +167,10 @@ func isDependentEAC3Header(data []byte) bool {
 
 // scanAC3Frame parses one sync-aligned AC-3 or E-AC-3 frame and returns its byte size.
 // It mutates a only with metadata found inside that frame; ok is false when the
-// frame header is absent, unsupported, or truncated.
-func scanAC3Frame(a *stream.AudioStream, data []byte) (int, bool) {
+// frame header is absent, unsupported, or truncated. sawIndependent reports whether
+// an earlier frame in this walk carried the stream's core/independent data — only
+// then may a dependent frame snapshot an embedded core and extend it.
+func scanAC3Frame(a *stream.AudioStream, data []byte, sawIndependent bool) (int, bool) {
 	if len(data) < 7 {
 		return 0, false
 	}
@@ -169,7 +187,6 @@ func scanAC3Frame(a *stream.AudioStream, data []byte) (int, bool) {
 	}
 	frameData := data[:frameSizeBytes]
 
-	secondFrame := a.ChannelCount > 0
 	bsidPeek := (frameData[5] & 0xF8) >> 3
 
 	br := buffer.NewBitReader(frameData)
@@ -277,19 +294,18 @@ func scanAC3Frame(a *stream.AudioStream, data []byte) (int, bool) {
 			}
 		}
 		if frameType == 1 {
-			// Only treat this as an extension of a previously parsed independent
-			// frame; a dependent frame seen first has no core to clone or extend.
-			if secondFrame {
+			// The embedded core is a snapshot of the independent-frame state,
+			// taken once: later dependent frames extend a, not the core.
+			if sawIndependent && a.CoreStream == nil {
 				a.CoreStream = a.Clone().(*stream.AudioStream)
 				a.CoreStream.StreamType = stream.StreamTypeAC3Audio
 			}
 			if readBool() {
 				chanmap := read(16)
 				if a.CoreStream != nil {
-					a.ChannelCount = a.CoreStream.ChannelCount
 					a.ChannelCount += ac3ChanMap(uint16(chanmap))
 					if layout := eac3ChannelMapLayout(uint16(chanmap)); layout != "" {
-						a.ChannelLayoutText = mergeAudioChannelLayouts(a.CoreStream.ChannelLayoutText, layout)
+						a.ChannelLayoutText = mergeAudioChannelLayouts(a.ChannelLayoutText, layout)
 					}
 					lfeOn = uint64(a.CoreStream.LFE)
 				}
@@ -391,13 +407,13 @@ func scanAC3Frame(a *stream.AudioStream, data []byte) (int, bool) {
 			a.DialNorm = -int(dialNorm)
 		case a.StreamType == stream.StreamTypeAC3Audio:
 			a.DialNorm = -int(dialNorm)
-		case a.StreamType == stream.StreamTypeAC3PlusAudio && secondFrame:
+		case a.StreamType == stream.StreamTypeAC3PlusAudio && sawIndependent:
 			a.DialNorm = -int(dialNormExt)
 		}
 	}
 
 	a.IsVBR = false
-	if a.StreamType == stream.StreamTypeAC3PlusAudio && bsid == 6 && !secondFrame {
+	if a.StreamType == stream.StreamTypeAC3PlusAudio && bsid == 6 && !sawIndependent {
 		a.IsInitialized = false
 	} else {
 		a.IsInitialized = true
