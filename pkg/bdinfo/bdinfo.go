@@ -129,6 +129,13 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 
+	start := time.Now()
+	emit(options.OnProgress, ProgressEvent{
+		Stage:      StageStarting,
+		Path:       options.Path,
+		OccurredAt: time.Now(),
+	})
+
 	cfg := toInternalSettings(options.Settings)
 	rom, err := bdrom.New(options.Path, cfg)
 	if err != nil {
@@ -153,7 +160,11 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 
-	start := time.Now()
+	emit(options.OnProgress, ProgressEvent{
+		Stage:      StageScanning,
+		Path:       options.Path,
+		OccurredAt: time.Now(),
+	})
 	var scan bdrom.ScanResult
 	if options.OnProgress != nil {
 		scan = rom.ScanMetadataWithProgress(func(update bdrom.ScanProgress) {
@@ -187,11 +198,20 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 	}
 
 	playlists := orderedPlaylists(rom)
-	return Result{
+	result := Result{
 		Disc:      buildDiscInfo(rom),
 		Playlists: buildPlaylistInfo(playlists, true),
 		Scan:      buildScanInfo(scan),
-	}, nil
+	}
+
+	emit(options.OnProgress, ProgressEvent{
+		Stage:      StageDone,
+		Path:       options.Path,
+		Elapsed:    time.Since(start),
+		OccurredAt: time.Now(),
+	})
+
+	return result, nil
 }
 
 // Run scans one path and returns structured output plus report content.
