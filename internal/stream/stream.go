@@ -555,21 +555,19 @@ func ConvertSampleRate(rate SampleRate) int {
 }
 
 func (a *AudioStream) ChannelDescription() string {
-	if description := immersiveChannelDescription(a.ChannelLayoutText); description != "" {
-		return description
-	}
-
-	description := ""
-	if a.ChannelCount > 0 {
-		description += fmt.Sprintf("%d.%d", a.ChannelCount, a.LFE)
-	} else {
-		switch a.ChannelLayout {
-		case ChannelLayoutMono:
-			description += "1.0"
-		case ChannelLayoutStereo:
-			description += "2.0"
-		case ChannelLayoutMulti:
-			description += "5.1"
+	description := immersiveChannelDescription(a.ChannelLayoutText)
+	if description == "" {
+		if a.ChannelCount > 0 {
+			description += fmt.Sprintf("%d.%d", a.ChannelCount, a.LFE)
+		} else {
+			switch a.ChannelLayout {
+			case ChannelLayoutMono:
+				description += "1.0"
+			case ChannelLayoutStereo:
+				description += "2.0"
+			case ChannelLayoutMulti:
+				description += "5.1"
+			}
 		}
 	}
 
