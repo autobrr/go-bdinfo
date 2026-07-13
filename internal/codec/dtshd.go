@@ -2,6 +2,7 @@ package codec
 
 import (
 	"encoding/binary"
+	"strings"
 
 	"github.com/autobrr/go-bdinfo/internal/buffer"
 	"github.com/autobrr/go-bdinfo/internal/stream"
@@ -279,65 +280,26 @@ func ScanDTSHD(a *stream.AudioStream, data []byte, fallbackBitrate int64) {
 	}
 }
 
+// dtsHDSpeakerActivityLayouts maps DTS-HD ExSS speaker activity mask bits (LSB first)
+// to MediaInfo-compatible speaker labels.
+var dtsHDSpeakerActivityLayouts = []string{
+	"C", "L R", "Ls Rs", "LFE", "Cs", "Lh Rh", "Lsr Rsr", "Ch",
+	"Oh", "Lc Rc", "Lw Rw", "Lss Rss", "LFE2", "Lhs Rhs", "Chr", "Lhr Rhr",
+}
+
 // dtsHDSpeakerActivityMaskChannelLayout converts a DTS-HD ExSS speaker activity mask
 // into MediaInfo-compatible speaker labels.
 func dtsHDSpeakerActivityMaskChannelLayout(mask uint16) string {
 	if mask == 1 {
 		return "M"
 	}
-	out := ""
-	if mask&0x0001 != 0 {
-		out += " C"
+	parts := make([]string, 0, 16)
+	for i, layout := range dtsHDSpeakerActivityLayouts {
+		if mask&(1<<i) != 0 {
+			parts = append(parts, layout)
+		}
 	}
-	if mask&0x0002 != 0 {
-		out += " L R"
-	}
-	if mask&0x0004 != 0 {
-		out += " Ls Rs"
-	}
-	if mask&0x0008 != 0 {
-		out += " LFE"
-	}
-	if mask&0x0010 != 0 {
-		out += " Cs"
-	}
-	if mask&0x0020 != 0 {
-		out += " Lh Rh"
-	}
-	if mask&0x0040 != 0 {
-		out += " Lsr Rsr"
-	}
-	if mask&0x0080 != 0 {
-		out += " Ch"
-	}
-	if mask&0x0100 != 0 {
-		out += " Oh"
-	}
-	if mask&0x0200 != 0 {
-		out += " Lc Rc"
-	}
-	if mask&0x0400 != 0 {
-		out += " Lw Rw"
-	}
-	if mask&0x0800 != 0 {
-		out += " Lss Rss"
-	}
-	if mask&0x1000 != 0 {
-		out += " LFE2"
-	}
-	if mask&0x2000 != 0 {
-		out += " Lhs Rhs"
-	}
-	if mask&0x4000 != 0 {
-		out += " Chr"
-	}
-	if mask&0x8000 != 0 {
-		out += " Lhr Rhr"
-	}
-	if out == "" {
-		return ""
-	}
-	return out[1:]
+	return strings.Join(parts, " ")
 }
 
 func detectDTSX(data []byte) bool {
