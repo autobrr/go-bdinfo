@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 )
@@ -438,6 +439,9 @@ func (r *Reader) parsePartitionMaps(pm []byte, n uint32) error {
 			found := false
 			for j, pm2 := range r.partitionMaps {
 				if pm2.kind == partitionMapType1 && pm2.partitionNumber == m.partitionNumber {
+					if j > math.MaxUint16 {
+						return fmt.Errorf("metadata partition map: matching type1 index %d exceeds partition reference range", j)
+					}
 					pref = uint16(j)
 					found = true
 					break

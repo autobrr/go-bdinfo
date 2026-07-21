@@ -139,13 +139,14 @@ func TestFileSetDescriptorBlockRoutesThroughMetadataPartition(t *testing.T) {
 	r := &Reader{
 		partitionStart:            100,
 		fileSetLocation:           0,
-		fileSetPartitionReference: 0,
+		fileSetPartitionReference: 1, // must come from the stored reference, not default to 0
 		partitionMaps: []partitionMap{
+			{kind: partitionMapType1, partitionNumber: 9}, // decoy at index 0
 			{kind: partitionMapType2, isMetadata: true, partitionNumber: 1},
 			{kind: partitionMapType1, partitionNumber: 1},
 		},
 		metadataFileAllocDescs: []allocationDescriptor{
-			{pref: 1, lbn: 4, length: 2048},
+			{pref: 2, lbn: 4, length: 2048},
 		},
 	}
 
