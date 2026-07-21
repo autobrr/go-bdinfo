@@ -21,6 +21,7 @@ type Reader struct {
 	fileSetDesc               *FileSetDescriptor
 	fileSetLocation           uint32
 	fileSetPartitionReference uint16
+	fileSetLocationValid      bool
 
 	metadataFileICB        *LongAD
 	metadataFileAllocDescs []allocationDescriptor
@@ -99,7 +100,7 @@ func (r *Reader) initialize() error {
 
 	// Now read the file set descriptor after we have partition info
 
-	if r.fileSetLocation > 0 {
+	if r.fileSetLocationValid {
 		location, err := r.fileSetDescriptorBlock()
 		if err != nil {
 			return fmt.Errorf("failed to resolve file set descriptor location: %w", err)
@@ -293,6 +294,7 @@ func (r *Reader) readVolumeDescriptorSequence(extent ExtentAD) error {
 			// For now, just store the location
 			r.fileSetLocation = fileSetLocation
 			r.fileSetPartitionReference = fileSetPartitionReference
+			r.fileSetLocationValid = true
 
 		case TagTerminating:
 			// End of sequence
@@ -433,11 +435,16 @@ func (r *Reader) parsePartitionMaps(pm []byte, n uint32) error {
 	for _, m := range r.partitionMaps {
 		if m.kind == partitionMapType2 && m.isMetadata {
 			pref := uint16(0)
+			found := false
 			for j, pm2 := range r.partitionMaps {
 				if pm2.kind == partitionMapType1 && pm2.partitionNumber == m.partitionNumber {
 					pref = uint16(j)
+					found = true
 					break
 				}
+			}
+			if !found {
+				return fmt.Errorf("metadata partition map: no type1 partition map found for partition number %d", m.partitionNumber)
 			}
 			icb := LongAD{
 				ExtentLocation: LBAddr{
@@ -460,22 +467,17 @@ func (r *Reader) parsePartitionMaps(pm []byte, n uint32) error {
 }
 
 func decodeLogicalVolumeContentsUse(contentsUse [16]byte) (lbn uint32, pref uint16, ok bool) {
-	hasData := false
-	for _, b := range contentsUse {
-		if b != 0 {
-			hasData = true
-			break
-		}
-	}
-	if !hasData {
+	// LogicalVolumeContentsUse holds a long_ad pointing at the FSD.
+	// Per ECMA-167 4/14.14.1.2, an unused/unrecorded extent is signaled by
+	// ExtentLength == 0, not by LogicalBlockNumber == 0 — LBN 0 is a
+	// legitimate FSD location (e.g. block 0 of a UDF metadata partition).
+	extentLength := binary.LittleEndian.Uint32(contentsUse[0:4]) & 0x3FFFFFFF
+	if extentLength == 0 {
 		return 0, 0, false
 	}
 
 	lbn = binary.LittleEndian.Uint32(contentsUse[4:8])
 	pref = binary.LittleEndian.Uint16(contentsUse[8:10])
-	if lbn == 0 {
-		return 0, pref, false
-	}
 	return lbn, pref, true
 }
 
