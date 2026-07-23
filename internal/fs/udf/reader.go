@@ -4,22 +4,25 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 )
 
 // Reader provides UDF file system reading capabilities
 type Reader struct {
-	file            *os.File
-	volumeLabel     string
-	blockSize       uint32
-	partitionStart  uint32
-	partitionSize   uint32
-	partitionStarts map[uint16]uint32
-	partitionMaps   []partitionMap
-	rootICB         LongAD
-	fileSetDesc     *FileSetDescriptor
-	fileSetLocation uint32
+	file                      *os.File
+	volumeLabel               string
+	blockSize                 uint32
+	partitionStart            uint32
+	partitionSize             uint32
+	partitionStarts           map[uint16]uint32
+	partitionMaps             []partitionMap
+	rootICB                   LongAD
+	fileSetDesc               *FileSetDescriptor
+	fileSetLocation           uint32
+	fileSetPartitionReference uint16
+	fileSetLocationValid      bool
 
 	metadataFileICB        *LongAD
 	metadataFileAllocDescs []allocationDescriptor
@@ -98,8 +101,11 @@ func (r *Reader) initialize() error {
 
 	// Now read the file set descriptor after we have partition info
 
-	if r.fileSetLocation > 0 {
-		location := r.partitionStart + r.fileSetLocation
+	if r.fileSetLocationValid {
+		location, err := r.fileSetDescriptorBlock()
+		if err != nil {
+			return fmt.Errorf("failed to resolve file set descriptor location: %w", err)
+		}
 
 		if _, err := r.file.Seek(int64(location)*int64(r.blockSize), io.SeekStart); err != nil {
 			return fmt.Errorf("failed to seek to file set descriptor: %w", err)
@@ -275,31 +281,21 @@ func (r *Reader) readVolumeDescriptorSequence(extent ExtentAD) error {
 					return fmt.Errorf("failed to parse partition maps: %w", err)
 				}
 			}
-			// Extract root directory location from logical volume contents use
-			// The first 8 bytes contain the file set descriptor location as ExtentAD
-			_ = binary.LittleEndian.Uint32(lvd.LogicalVolumeContentsUse[0:4]) // fileSetLength
-			fileSetLocation := binary.LittleEndian.Uint32(lvd.LogicalVolumeContentsUse[4:8])
-
-			// Debug: check if LogicalVolumeContentsUse has data
-			hasData := false
-			for _, b := range lvd.LogicalVolumeContentsUse {
-				if b != 0 {
-					hasData = true
-					break
-				}
-			}
-
-			if !hasData || fileSetLocation == 0 {
+			fileSetLocation, fileSetPartitionReference, hasFileSetLocation := decodeLogicalVolumeContentsUse(lvd.LogicalVolumeContentsUse)
+			if !hasFileSetLocation {
 				// LogicalVolumeContentsUse is empty or zero
 				// Try common fallback locations for FileSet descriptor
 				// Most Blu-ray discs put it at sector 32 of the partition
 				fileSetLocation = 32
+				fileSetPartitionReference = 0
 			}
 
 			// We need to defer reading the file set descriptor until after we've processed
 			// all volume descriptors (especially the partition descriptor)
 			// For now, just store the location
 			r.fileSetLocation = fileSetLocation
+			r.fileSetPartitionReference = fileSetPartitionReference
+			r.fileSetLocationValid = true
 
 		case TagTerminating:
 			// End of sequence
@@ -419,24 +415,13 @@ func (r *Reader) parsePartitionMaps(pm []byte, n uint32) error {
 
 		case partitionMapType2:
 			m := partitionMap{kind: partitionMapType2}
-			if mlen >= 4+32 {
+			if mlen >= 40+4 {
 				ident := strings.TrimRight(string(pm[off+5:off+5+23]), "\x00")
 				ident = strings.TrimPrefix(ident, "*")
 				if ident == udfMetadataPartitionIdent {
 					m.isMetadata = true
-					// UDF Metadata Partition Map:
-					// Common BD-ROM layout encodes the metadata file ICB location as extent_ad
-					// (len=1, loc=<lbn>) at offset 36 from start of the map.
-					if mlen >= 36+8 {
-						extLen := binary.LittleEndian.Uint32(pm[off+36 : off+40])
-						extLoc := binary.LittleEndian.Uint32(pm[off+40 : off+44])
-						if extLen == 1 {
-							m.metadataICBLBN = extLoc
-						} else {
-							// Fallback: interpret extLen as the LBN (seen on some images).
-							m.metadataICBLBN = extLen
-						}
-					}
+					m.partitionNumber = binary.LittleEndian.Uint16(pm[off+38 : off+40])
+					m.metadataICBLBN = binary.LittleEndian.Uint32(pm[off+40 : off+44])
 				}
 			}
 			r.partitionMaps = append(r.partitionMaps, m)
@@ -450,10 +435,25 @@ func (r *Reader) parsePartitionMaps(pm []byte, n uint32) error {
 
 	for _, m := range r.partitionMaps {
 		if m.kind == partitionMapType2 && m.isMetadata {
+			pref := uint16(0)
+			found := false
+			for j, pm2 := range r.partitionMaps {
+				if pm2.kind == partitionMapType1 && pm2.partitionNumber == m.partitionNumber {
+					if j > math.MaxUint16 {
+						return fmt.Errorf("metadata partition map: matching type1 index %d exceeds partition reference range", j)
+					}
+					pref = uint16(j)
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("metadata partition map: no type1 partition map found for partition number %d", m.partitionNumber)
+			}
 			icb := LongAD{
 				ExtentLocation: LBAddr{
 					LogicalBlockNumber:       m.metadataICBLBN,
-					PartitionReferenceNumber: 0, // metadata file lives in main partition map
+					PartitionReferenceNumber: pref,
 				},
 			}
 			r.metadataFileICB = &icb
@@ -468,6 +468,28 @@ func (r *Reader) parsePartitionMaps(pm []byte, n uint32) error {
 	}
 
 	return nil
+}
+
+func decodeLogicalVolumeContentsUse(contentsUse [16]byte) (lbn uint32, pref uint16, ok bool) {
+	// LogicalVolumeContentsUse holds a long_ad pointing at the FSD.
+	// Per ECMA-167 4/14.14.1.2, an unused/unrecorded extent is signaled by
+	// ExtentLength == 0, not by LogicalBlockNumber == 0 — LBN 0 is a
+	// legitimate FSD location (e.g. block 0 of a UDF metadata partition).
+	extentLength := binary.LittleEndian.Uint32(contentsUse[0:4]) & 0x3FFFFFFF
+	if extentLength == 0 {
+		return 0, 0, false
+	}
+
+	lbn = binary.LittleEndian.Uint32(contentsUse[4:8])
+	pref = binary.LittleEndian.Uint16(contentsUse[8:10])
+	return lbn, pref, true
+}
+
+func (r *Reader) fileSetDescriptorBlock() (uint32, error) {
+	return r.resolveLBAddr(LBAddr{
+		LogicalBlockNumber:       r.fileSetLocation,
+		PartitionReferenceNumber: r.fileSetPartitionReference,
+	})
 }
 
 func (r *Reader) resolvePartitionBlock(partRef uint16, lbn uint32) (uint32, error) {

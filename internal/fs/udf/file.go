@@ -497,17 +497,7 @@ func (d *Directory) readDirectoryData(ad allocationDescriptor) error {
 		if fid.LengthOfFileIdentifier > 0 {
 			nameData := make([]byte, fid.LengthOfFileIdentifier)
 			fidReader.Read(nameData)
-
-			// Parse the name (simplified - assumes ASCII)
-			// First byte is compression type (usually 8 for 8-bit)
-			if len(nameData) > 1 && nameData[0] == 8 {
-				name := string(nameData[1:])
-				// Remove null terminator if present
-				if idx := strings.IndexByte(name, 0); idx >= 0 {
-					name = name[:idx]
-				}
-				fid.fileName = name
-			}
+			fid.fileName = d.reader.decodeString(nameData)
 		}
 
 		// Store the FID
@@ -876,17 +866,7 @@ func (d *Directory) readEmbeddedDirectoryData(data []byte) error {
 		nameOffset := 38 + int(fid.LengthOfImplementationUse)
 		if fid.LengthOfFileIdentifier > 0 && offset+uint32(nameOffset)+uint32(fid.LengthOfFileIdentifier) <= uint32(len(data)) {
 			nameData := data[offset+uint32(nameOffset) : offset+uint32(nameOffset)+uint32(fid.LengthOfFileIdentifier)]
-
-			// Parse the name (simplified - assumes ASCII)
-			// First byte is compression type (usually 8 for 8-bit)
-			if len(nameData) > 1 && nameData[0] == 8 {
-				name := string(nameData[1:])
-				// Remove null terminator if present
-				if idx := strings.IndexByte(name, 0); idx >= 0 {
-					name = name[:idx]
-				}
-				fid.fileName = name
-			}
+			fid.fileName = d.reader.decodeString(nameData)
 		}
 
 		// Store the FID
