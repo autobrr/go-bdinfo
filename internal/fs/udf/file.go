@@ -500,8 +500,10 @@ func (d *Directory) readDirectoryData(ad allocationDescriptor) error {
 			fid.fileName = d.reader.decodeString(nameData)
 		}
 
-		// Store the FID
-		d.entries = append(d.entries, fid)
+		// Store the FID; skip deleted entries like DiscUtils does
+		if fid.FileCharacteristics&FileCharDeleted == 0 {
+			d.entries = append(d.entries, fid)
+		}
 
 		// Calculate total FID size (must be 4-byte aligned)
 		fidSize := uint32(38) + uint32(fid.LengthOfImplementationUse) + uint32(fid.LengthOfFileIdentifier)
@@ -869,8 +871,10 @@ func (d *Directory) readEmbeddedDirectoryData(data []byte) error {
 			fid.fileName = d.reader.decodeString(nameData)
 		}
 
-		// Store the FID
-		d.entries = append(d.entries, fid)
+		// Store the FID; skip deleted entries like DiscUtils does
+		if fid.FileCharacteristics&FileCharDeleted == 0 {
+			d.entries = append(d.entries, fid)
+		}
 
 		// Calculate total FID size (must be 4-byte aligned)
 		fidSize := uint32(38) + uint32(fid.LengthOfImplementationUse) + uint32(fid.LengthOfFileIdentifier)
