@@ -276,3 +276,26 @@ func TestExtentReader_ReadsAcrossExtents(t *testing.T) {
 		t.Fatalf("data mismatch: got len=%d want len=%d", len(got), len(want))
 	}
 }
+
+func TestDirectoryEntriesSkipDeletedFIDs(t *testing.T) {
+	fid := func(chars byte, name string) []byte {
+		b := make([]byte, 38)
+		b[18] = chars
+		nameData := append([]byte{8}, name...)
+		b[19] = byte(len(nameData))
+		b = append(b, nameData...)
+		for len(b)%4 != 0 {
+			b = append(b, 0)
+		}
+		return b
+	}
+	data := append(fid(0, "KEEP.MPL"), fid(FileCharDeleted, "GONE.MPL")...)
+
+	d := &Directory{reader: &Reader{}}
+	if err := d.readEmbeddedDirectoryData(data); err != nil {
+		t.Fatalf("readEmbeddedDirectoryData: %v", err)
+	}
+	if len(d.entries) != 1 || d.getFileName(d.entries[0]) != "KEEP.MPL" {
+		t.Fatalf("entries=%v, want only KEEP.MPL", d.entries)
+	}
+}
