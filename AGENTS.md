@@ -351,3 +351,17 @@ Repo: `~/github/oss/BDInfo-src/`
   - `TSStreamClipFile.cs`: CLPI clip info parser
   - `BDROM.cs`: Main disc structure
   - `LanguageCodes.cs`: ISO 639-2 language mappings
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's GitHub Issues (`autobrr/go-bdinfo`), managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default canonical vocabulary — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — `CONTEXT.md` and `docs/adr/` at the repo root, created lazily. See `docs/agents/domain.md`.
