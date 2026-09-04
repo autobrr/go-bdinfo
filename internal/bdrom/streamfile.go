@@ -381,6 +381,22 @@ type streamState struct {
 	pesStarted          bool
 	pesStartCount       uint64
 	collectDiagnostics  bool
+	// pgsBuf holds the head of the current PES transfer for PGS streams. BDInfo runs
+	// TSCodecPGS.Scan per transfer and only reads its first segment.
+	pgsBuf []byte
+	// transferEnds records where each PES transfer ends inside codecData for DTS-HD
+	// streams, so the codec scan can keep BDInfo's per-transfer DTS:X search window.
+	transferEnds []int
+}
+
+func (state *streamState) markTransferEnd() {
+	if state.transferEnds == nil {
+		return
+	}
+	n := len(state.codecData)
+	if len(state.transferEnds) == 0 || state.transferEnds[len(state.transferEnds)-1] < n {
+		state.transferEnds = append(state.transferEnds, n)
+	}
 }
 
 type scanClipTarget struct {
@@ -629,12 +645,24 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 				dataCap = maxStreamDataVideo
 			case st.Base().IsAudioStream():
 				dataCap = maxStreamDataAudio
+			case st.Base().IsGraphicsStream():
+				dataCap = 0 // PGS scans per transfer from pgsBuf; IGS has no codec scan.
 			}
 		}
 		state := &streamState{
-			codecData:          getCodecBuffer(dataCap),
 			pesPacketRemaining: -2,
 			collectDiagnostics: collectDiagnostics,
+		}
+		if dataCap > 0 {
+			state.codecData = getCodecBuffer(dataCap)
+		}
+		if st != nil {
+			switch st.Base().StreamType {
+			case stream.StreamTypePresentationGraphics:
+				state.pgsBuf = make([]byte, 0, 256)
+			case stream.StreamTypeDTSHDAudio, stream.StreamTypeDTSHDMasterAudio, stream.StreamTypeDTSHDSecondaryAudio:
+				state.transferEnds = make([]int, 0, 8)
+			}
 		}
 		states[pid] = state
 		if int(pid) < maxTSPID {
@@ -734,6 +762,8 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 
 		if isPESStart {
 			state.pesStartCount++
+			state.finishPGSTransfer(st)
+			state.markTransferEnd()
 
 			// Match BDInfo: HEVC per-transfer tags are derived from the previous PES transfer
 			// (ScanStream runs when a new payload starts, ending the prior transfer).
@@ -935,6 +965,12 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 		if state.pesPacketRemaining > 0 {
 			state.pesPacketRemaining -= len(payload)
 		}
+		if state.pgsBuf != nil {
+			state.pgsBuf = append(state.pgsBuf, payload[:min(cap(state.pgsBuf)-len(state.pgsBuf), len(payload))]...)
+			if state.pesPacketRemaining == 0 {
+				state.finishPGSTransfer(st)
+			}
+		}
 		if state.codecData != nil && len(payload) > 0 {
 			dataCap := cap(state.codecData)
 			if len(state.codecData) < dataCap {
@@ -944,6 +980,9 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 				}
 				state.codecData = append(state.codecData, payload...)
 			}
+		}
+		if state.pesPacketRemaining == 0 {
+			state.markTransferEnd()
 		}
 	}
 
@@ -1054,14 +1093,18 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 			case stream.StreamTypeDTSAudio:
 				codec.ScanDTS(concrete, data, int64(concrete.BitRate))
 			case stream.StreamTypeDTSHDAudio, stream.StreamTypeDTSHDMasterAudio, stream.StreamTypeDTSHDSecondaryAudio:
-				codec.ScanDTSHD(concrete, data, int64(concrete.BitRate))
+				codec.ScanDTSHD(concrete, data, state.transferEnds, int64(concrete.BitRate))
 			case stream.StreamTypeLPCMAudio:
 				codec.ScanLPCM(concrete, data)
 			case stream.StreamTypeMPEG2AACAudio, stream.StreamTypeMPEG4AACAudio:
 				codec.ScanAAC(concrete, data)
 			}
 		case *stream.GraphicsStream:
-			codec.ScanPGS(concrete, data)
+			// Match BDInfo: PGS is initialized by its first PCS (see finishPGSTransfer);
+			// IGS is marked initialized as-is.
+			if state.pgsBuf == nil {
+				concrete.IsInitialized = true
+			}
 		}
 	}
 
@@ -1110,6 +1153,18 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 	}
 
 	return nil
+}
+
+// finishPGSTransfer mirrors BDInfo's ScanStream for PGS: run the codec scan on the
+// completed PES transfer, then drop the buffer for the next one.
+func (state *streamState) finishPGSTransfer(st stream.Info) {
+	if len(state.pgsBuf) == 0 {
+		return
+	}
+	if g, ok := st.(*stream.GraphicsStream); ok {
+		codec.ScanPGS(g, state.pgsBuf)
+	}
+	state.pgsBuf = state.pgsBuf[:0]
 }
 
 func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, clipTargets []scanClipTarget, clipCursor *clipTargetCursor, states map[uint16]*streamState, pid uint16, state *streamState, ts uint64, dtsForLength uint64, isVideo bool, firstDTS *uint64, lastDTS *uint64) {

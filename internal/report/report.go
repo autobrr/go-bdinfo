@@ -110,7 +110,7 @@ func RenderReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile,
 		b.WriteString("    http://www.cinemasquid.com/blu-ray/tools/bdinfo\n")
 		b.WriteString("  UniqProject GitHub (new)\n")
 		b.WriteString("   https://github.com/UniqProject/BDInfo\n")
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 		b.WriteString("INCLUDES FORUMS REPORT FOR:\n")
 		b.WriteString("  AVS Forum Blu-ray Audio and Video Specifications Thread\n")
 		b.WriteString("    http://www.avsforum.com/avs-vb/showthread.php?t=1155731\n")

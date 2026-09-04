@@ -686,14 +686,19 @@ type GraphicsStream struct {
 	Height         int
 	Captions       int
 	ForcedCaptions int
-	CaptionIDs     map[int]any
-	LastFrame      any
+	LastFrame      PGSFrame
+}
+
+// PGSFrame mirrors BDInfo's TSCodecPGS.Frame: the composition state carried
+// between PES transfers while counting captions.
+type PGSFrame struct {
+	Forced   bool
+	Finished bool
 }
 
 func NewGraphicsStream() *GraphicsStream {
 	return &GraphicsStream{
-		Stream:     Stream{IsVBR: true, IsInitialized: false},
-		CaptionIDs: make(map[int]any),
+		Stream: Stream{IsVBR: true, IsInitialized: false},
 	}
 }
 

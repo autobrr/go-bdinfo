@@ -671,6 +671,7 @@ func (b *BDROM) ScanWithProgress(progress ScanProgressFunc) ScanResult {
 	}, nil)
 
 	for _, playlist := range playlists {
+		playlist.UpdateGraphicsCaptions()
 		if b.Is50Hz {
 			continue
 		}
@@ -726,6 +727,9 @@ func (b *BDROM) ScanFull() ScanResult {
 		result.FileErrors[streamFile.Name] = err
 		errMu.Unlock()
 	})
+	for _, playlist := range playlists {
+		playlist.UpdateGraphicsCaptions()
+	}
 
 	return result
 }
@@ -781,6 +785,9 @@ func (b *BDROM) ScanFullWithProgress(progress ScanProgressFunc) ScanResult {
 		result.FileErrors[streamFile.Name] = err
 		errMu.Unlock()
 	})
+	for _, playlist := range playlists {
+		playlist.UpdateGraphicsCaptions()
+	}
 	emit(ScanProgress{Stage: ScanStageComplete, Completed: 1, Total: 1})
 
 	return result

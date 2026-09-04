@@ -25,3 +25,22 @@ func TestDTSSpeakerActivityMaskRearHeightPair(t *testing.T) {
 		t.Fatalf("ChannelDescription()=%q want 4.1.2", got)
 	}
 }
+
+func TestDetectDTSXStaysInsideTransfer(t *testing.T) {
+	xll := []byte{0x41, 0xA2, 0x95, 0x47}
+	dtsx := []byte{0x02, 0x00, 0x08, 0x50}
+	first := append(append([]byte{0, 0, 0, 0}, xll...), make([]byte, 16)...)
+	second := append([]byte{0, 0}, dtsx...)
+	data := append(append([]byte{}, first...), second...)
+	ends := []int{len(first), len(data)}
+
+	if detectDTSX(data[:transferEnd(0, ends, len(data))]) {
+		t.Fatal("DTS:X pattern in the next transfer must not count")
+	}
+	if !detectDTSX(data[:transferEnd(0, nil, len(data))]) {
+		t.Fatal("unbounded scan should still find the pattern")
+	}
+	if got := transferEnd(len(first), ends, len(data)); got != len(data) {
+		t.Fatalf("transferEnd(second) = %d, want %d", got, len(data))
+	}
+}
