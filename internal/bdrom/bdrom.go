@@ -474,90 +474,16 @@ func (b *BDROM) ScanMetadata() ScanResult {
 
 // ScanMetadataWithProgress is like ScanMetadata but emits progress events.
 func (b *BDROM) ScanMetadataWithProgress(progress ScanProgressFunc) ScanResult {
-	result := ScanResult{FileErrors: make(map[string]error)}
-	var errMu sync.Mutex
-	var progressMu sync.Mutex
-	emit := func(update ScanProgress) {
-		if progress != nil {
-			progress(update)
-		}
-	}
-
-	clipFiles := orderedStreamClipFiles(b.StreamClipFiles)
-	emit(ScanProgress{Stage: ScanStageClipInfo, Total: len(clipFiles)})
-	var clipDone atomic.Int64
-	runParallel(clipFiles, scanWorkerLimit(len(clipFiles), 0), func(clip *StreamClipFile) error {
-		return clip.Scan()
-	}, func(_ *StreamClipFile) {
-		progressMu.Lock()
-		defer progressMu.Unlock()
-		done := int(clipDone.Add(1))
-		emit(ScanProgress{Stage: ScanStageClipInfo, Completed: done, Total: len(clipFiles)})
-	}, func(clip *StreamClipFile, err error) {
-		errMu.Lock()
-		result.FileErrors[clip.Name] = err
-		errMu.Unlock()
-	})
-
-	for _, streamFile := range b.StreamFiles {
-		ssifName := strings.ToUpper(strings.TrimSuffix(streamFile.Name, ".M2TS") + ".SSIF")
-		if ssif, ok := b.InterleavedFiles[ssifName]; ok {
-			streamFile.InterleavedFile = ssif
-		}
-	}
-
-	playlists := orderedPlaylists(b.PlaylistFiles, b.PlaylistOrder)
-	emit(ScanProgress{Stage: ScanStagePlaylist, Total: len(playlists)})
-	var playlistDone atomic.Int64
-	runParallel(playlists, scanWorkerLimit(len(playlists), 0), func(playlist *PlaylistFile) error {
-		return playlist.Scan(b.StreamFiles, b.StreamClipFiles)
-	}, func(_ *PlaylistFile) {
-		progressMu.Lock()
-		defer progressMu.Unlock()
-		done := int(playlistDone.Add(1))
-		emit(ScanProgress{Stage: ScanStagePlaylist, Completed: done, Total: len(playlists)})
-	}, func(playlist *PlaylistFile, err error) {
-		errMu.Lock()
-		result.FileErrors[playlist.Name] = err
-		errMu.Unlock()
-	})
-
-	emit(ScanProgress{Stage: ScanStageInitialize, Total: len(playlists)})
-	var initDone atomic.Int64
-	runParallel(playlists, scanWorkerLimit(len(playlists), 0), func(playlist *PlaylistFile) error {
-		playlist.Initialize()
-		return nil
-	}, func(_ *PlaylistFile) {
-		progressMu.Lock()
-		defer progressMu.Unlock()
-		done := int(initDone.Add(1))
-		emit(ScanProgress{Stage: ScanStageInitialize, Completed: done, Total: len(playlists)})
-	}, nil)
-
-	for _, playlist := range playlists {
-		vidCount := len(playlist.VideoStreams)
-		for _, vs := range playlist.VideoStreams {
-			if !b.Is50Hz && (vs.FrameRate() == stream.FrameRate25 || vs.FrameRate() == stream.FrameRate50) {
-				b.Is50Hz = true
-			}
-			if vidCount > 1 && b.Is3D {
-				if (vs.StreamType == stream.StreamTypeAVCVideo && playlist.MVCBaseViewR) ||
-					(vs.StreamType == stream.StreamTypeMVCVideo && !playlist.MVCBaseViewR) {
-					base := true
-					vs.BaseView = &base
-				} else if vs.StreamType == stream.StreamTypeAVCVideo || vs.StreamType == stream.StreamTypeMVCVideo {
-					base := false
-					vs.BaseView = &base
-				}
-			}
-		}
-	}
-
-	emit(ScanProgress{Stage: ScanStageComplete, Completed: 1, Total: 1})
-	return result
+	return b.scanWithProgress(progress, false)
 }
 
 func (b *BDROM) ScanWithProgress(progress ScanProgressFunc) ScanResult {
+	return b.scanWithProgress(progress, true)
+}
+
+// scanWithProgress scans clip info and playlists, optionally scanning M2TS stream
+// files (scanStreams), then applies the shared 50Hz/3D BaseView epilogue.
+func (b *BDROM) scanWithProgress(progress ScanProgressFunc, scanStreams bool) ScanResult {
 	result := ScanResult{FileErrors: make(map[string]error)}
 	var errMu sync.Mutex
 	var progressMu sync.Mutex
@@ -606,57 +532,58 @@ func (b *BDROM) ScanWithProgress(progress ScanProgressFunc) ScanResult {
 		errMu.Unlock()
 	})
 
-	// scan stream files
-	streamFiles := orderedStreamFiles(b.StreamFiles)
-	streamPlaylists := buildStreamPlaylistIndex(playlists)
-	filteredStreamFiles := streamFiles[:0]
-	for _, streamFile := range streamFiles {
-		if len(streamPlaylists[streamFile]) == 0 {
-			continue
-		}
-		filteredStreamFiles = append(filteredStreamFiles, streamFile)
-	}
-	streamFiles = filteredStreamFiles
-	streamBytes := streamFilesTotalSize(streamFiles)
-	emit(ScanProgress{Stage: ScanStageStream, Total: len(streamFiles), TotalBytes: streamBytes})
-	var streamDone atomic.Int64
-	var streamProcessed atomic.Uint64
-	var streamEmitMu sync.Mutex
-	lastStreamEmit := time.Time{}
-	lastStreamBytes := uint64(0)
-	const streamEmitBytes = uint64(4 * 1024 * 1024)
-	const streamEmitInterval = 500 * time.Millisecond
-	emitStream := func(force bool) {
-		streamEmitMu.Lock()
-		defer streamEmitMu.Unlock()
-		processed := streamProcessed.Load()
-		done := int(streamDone.Load())
-		if !force {
-			if processed < streamBytes && processed-lastStreamBytes < streamEmitBytes && (lastStreamEmit.IsZero() || time.Since(lastStreamEmit) < streamEmitInterval) {
-				return
+	if scanStreams {
+		streamFiles := orderedStreamFiles(b.StreamFiles)
+		streamPlaylists := buildStreamPlaylistIndex(playlists)
+		filteredStreamFiles := streamFiles[:0]
+		for _, streamFile := range streamFiles {
+			if len(streamPlaylists[streamFile]) == 0 {
+				continue
 			}
-			lastStreamBytes = processed
-			lastStreamEmit = time.Now()
+			filteredStreamFiles = append(filteredStreamFiles, streamFile)
 		}
-		emit(ScanProgress{Stage: ScanStageStream, Completed: done, Total: len(streamFiles), ProcessedBytes: processed, TotalBytes: streamBytes})
-	}
-	runParallel(streamFiles, scanWorkerLimit(len(streamFiles), streamBytes), func(streamFile *StreamFile) error {
-		return streamFile.ScanWithProgress(streamPlaylists[streamFile], false, func(delta uint64) {
-			if delta == 0 {
-				return
+		streamFiles = filteredStreamFiles
+		streamBytes := streamFilesTotalSize(streamFiles)
+		emit(ScanProgress{Stage: ScanStageStream, Total: len(streamFiles), TotalBytes: streamBytes})
+		var streamDone atomic.Int64
+		var streamProcessed atomic.Uint64
+		var streamEmitMu sync.Mutex
+		lastStreamEmit := time.Time{}
+		lastStreamBytes := uint64(0)
+		const streamEmitBytes = uint64(4 * 1024 * 1024)
+		const streamEmitInterval = 500 * time.Millisecond
+		emitStream := func(force bool) {
+			streamEmitMu.Lock()
+			defer streamEmitMu.Unlock()
+			processed := streamProcessed.Load()
+			done := int(streamDone.Load())
+			if !force {
+				if processed < streamBytes && processed-lastStreamBytes < streamEmitBytes && (lastStreamEmit.IsZero() || time.Since(lastStreamEmit) < streamEmitInterval) {
+					return
+				}
+				lastStreamBytes = processed
+				lastStreamEmit = time.Now()
 			}
-			streamProcessed.Add(delta)
-			emitStream(false)
+			emit(ScanProgress{Stage: ScanStageStream, Completed: done, Total: len(streamFiles), ProcessedBytes: processed, TotalBytes: streamBytes})
+		}
+		runParallel(streamFiles, scanWorkerLimit(len(streamFiles), streamBytes), func(streamFile *StreamFile) error {
+			return streamFile.ScanWithProgress(streamPlaylists[streamFile], false, func(delta uint64) {
+				if delta == 0 {
+					return
+				}
+				streamProcessed.Add(delta)
+				emitStream(false)
+			})
+		}, func(_ *StreamFile) {
+			streamDone.Add(1)
+			emitStream(true)
+		}, func(streamFile *StreamFile, err error) {
+			errMu.Lock()
+			result.FileErrors[streamFile.Name] = err
+			errMu.Unlock()
 		})
-	}, func(_ *StreamFile) {
-		streamDone.Add(1)
-		emitStream(true)
-	}, func(streamFile *StreamFile, err error) {
-		errMu.Lock()
-		result.FileErrors[streamFile.Name] = err
-		errMu.Unlock()
-	})
-	emit(ScanProgress{Stage: ScanStageStream, Completed: len(streamFiles), Total: len(streamFiles), ProcessedBytes: streamProcessed.Load(), TotalBytes: streamBytes})
+		emit(ScanProgress{Stage: ScanStageStream, Completed: len(streamFiles), Total: len(streamFiles), ProcessedBytes: streamProcessed.Load(), TotalBytes: streamBytes})
+	}
 
 	emit(ScanProgress{Stage: ScanStageInitialize, Total: len(playlists)})
 	var initDone atomic.Int64

@@ -29,6 +29,7 @@ Run a parity check after every parser or report change. Classify every diff line
 ### Known Divergences (BDInfo bugs fixed in Go)
 - PGS descriptions (`1920x1080 / N Captions`): the official Linux CLI leaves the cell empty because only the GUI runs `FormMain.UpdateSubtitleChapterCount`. Go ports `TSCodecPGS.Scan` (`internal/codec/pgs.go`) and the GUI sum (`PlaylistFile.UpdateGraphicsCaptions`) so the CLI report carries the value.
 - PGS PCS cropping fields: BDInfo reads the 8-byte cropping rectangle on every composition object; the PGS format carries it only when `object_cropped_flag` (0x80) is set. Go reads it conditionally (`internal/codec/pgs.go`), so caption counts can differ on multi-object compositions.
+- E-AC-3 dependent frames: `TSCodecAC3.Scan` parses one frame per call, stops as soon as the stream is initialized, and re-clones the core on every dependent frame. It only finds JOC/Atmos because its EMDF scan runs past the frame end into the next frame. Go (`internal/codec/ac3.go`) keeps parsing inside frame bounds, walks every consecutive dependent (strmtyp 1) frame after the independent frame, snapshots the embedded core once, and sums the dependent bitrates and channel maps onto the stream.
 
 ### Output Quirks To Match (Gotchas)
 - Hidden-tracks note: official prefixes `(*) Indicates included stream hidden by this playlist.` with a bare `\r\n` in an otherwise LF report when `playlist.HasHiddenTracks` is true. See `internal/report/report.go`.

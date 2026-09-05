@@ -26,6 +26,20 @@ func TestAudioStreamChannelDescription_DTSHeightLayout(t *testing.T) {
 	}
 }
 
+func TestAudioStreamChannelDescription_HeightLayoutKeepsExtendedSuffix(t *testing.T) {
+	a := &AudioStream{
+		Stream:            Stream{StreamType: StreamTypeDTSHDMasterAudio},
+		AudioMode:         AudioModeExtended,
+		ChannelCount:      7,
+		LFE:               1,
+		ChannelLayoutText: "L R C LFE Ls Rs Lh Rh",
+	}
+
+	if got := a.ChannelDescription(); got != "5.1.2-ES" {
+		t.Fatalf("ChannelDescription()=%q want 5.1.2-ES", got)
+	}
+}
+
 func TestAudioStreamChannelDescription_NonHeightLayoutUsesLegacyCount(t *testing.T) {
 	a := &AudioStream{
 		ChannelCount:      7,
