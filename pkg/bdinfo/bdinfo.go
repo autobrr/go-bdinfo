@@ -108,16 +108,25 @@ type ScanInfo struct {
 
 // Result contains structured scan output plus rendered report content.
 type Result struct {
-	Disc       DiscInfo
-	Playlists  []PlaylistInfo
-	Scan       ScanInfo
-	Report     string
-	ReportPath string
+	Disc      DiscInfo
+	Playlists []PlaylistInfo
+	Scan      ScanInfo
+	// Report is the text the CLI writes for the same settings: the full report,
+	// or one block when SummaryOnly or ForumsOnly is set.
+	Report string
+	// QuickSummary is the QUICK SUMMARY block, byte-identical to the CLI
+	// --summaryonly output. Empty when GenerateTextSummary is off.
+	QuickSummary string
+	// ForumsBlock is the BEGIN FORUMS PASTE ... END FORUMS PASTE block(s),
+	// byte-identical to the CLI --forumsonly output. Like the CLI, it falls
+	// back to the full report when no playlist was reported.
+	ForumsBlock string
+	ReportPath  string
 }
 
 // DiscoverPlaylists opens the disc and returns playlist metadata without scanning stream files.
 // Faster than Run for discovery: scans CLPI and MPLS only, skips the expensive M2TS read.
-// The returned Result has Disc and Playlists populated; Report is always empty.
+// The returned Result has Disc and Playlists populated; Report, QuickSummary and ForumsBlock are always empty.
 func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 	if options.Path == "" {
 		return Result{}, errors.New("path is required")
@@ -304,17 +313,19 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		OccurredAt: time.Now(),
 	})
 
-	reportPath, reportText, err := report.RenderReport(options.ReportPath, rom, playlists, scan, cfg)
+	reportPath, rendered, err := report.RenderReport(options.ReportPath, rom, playlists, scan, cfg)
 	if err != nil {
 		return Result{}, err
 	}
 
 	result := Result{
-		Disc:       buildDiscInfo(rom),
-		Playlists:  buildPlaylistInfo(playlists, false),
-		Scan:       buildScanInfo(scan),
-		Report:     reportText,
-		ReportPath: reportPath,
+		Disc:         buildDiscInfo(rom),
+		Playlists:    buildPlaylistInfo(playlists, false),
+		Scan:         buildScanInfo(scan),
+		Report:       rendered.Report,
+		QuickSummary: rendered.QuickSummary,
+		ForumsBlock:  rendered.ForumsBlock,
+		ReportPath:   reportPath,
 	}
 
 	emit(options.OnProgress, ProgressEvent{

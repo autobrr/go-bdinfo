@@ -91,6 +91,7 @@ func main() {
 Notes:
 - `Run` processes a single disc path per call.
 - The API returns structured metadata (`Result.Disc`, `Result.Playlists`, `Result.Scan`) and rendered report content (`Result.Report`).
+- `Result.QuickSummary` and `Result.ForumsBlock` hold the `--summaryonly` and `--forumsonly` text from the same scan. They are always filled and do not depend on `SummaryOnly` or `ForumsOnly`.
 - File writing is caller-owned.
 
 ## Options
