@@ -174,24 +174,7 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 		Path:       options.Path,
 		OccurredAt: time.Now(),
 	})
-	var scan bdrom.ScanResult
-	if options.OnProgress != nil {
-		scan = rom.ScanMetadataWithProgress(func(update bdrom.ScanProgress) {
-			stage, ok := stageFromScanProgress(update.Stage)
-			if !ok {
-				return
-			}
-			emit(options.OnProgress, ProgressEvent{
-				Stage:      stage,
-				Path:       options.Path,
-				Completed:  update.Completed,
-				Total:      update.Total,
-				OccurredAt: time.Now(),
-			})
-		})
-	} else {
-		scan = rom.ScanMetadata()
-	}
+	scan := rom.ScanMetadataWithProgress(ctx, scanProgressFunc(options))
 
 	emit(options.OnProgress, ProgressEvent{
 		Stage:      StageScanComplete,
@@ -272,26 +255,7 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		Path:       options.Path,
 		OccurredAt: time.Now(),
 	})
-	var scan bdrom.ScanResult
-	if options.OnProgress != nil {
-		scan = rom.ScanWithProgress(func(update bdrom.ScanProgress) {
-			stage, ok := stageFromScanProgress(update.Stage)
-			if !ok {
-				return
-			}
-			emit(options.OnProgress, ProgressEvent{
-				Stage:          stage,
-				Path:           options.Path,
-				Completed:      update.Completed,
-				Total:          update.Total,
-				ProcessedBytes: update.ProcessedBytes,
-				TotalBytes:     update.TotalBytes,
-				OccurredAt:     time.Now(),
-			})
-		})
-	} else {
-		scan = rom.Scan()
-	}
+	scan := rom.ScanWithProgress(ctx, scanProgressFunc(options))
 
 	emit(options.OnProgress, ProgressEvent{
 		Stage:      StageScanComplete,
@@ -341,6 +305,29 @@ func Run(ctx context.Context, options Options) (Result, error) {
 func emit(cb func(ProgressEvent), event ProgressEvent) {
 	if cb != nil {
 		cb(event)
+	}
+}
+
+// scanProgressFunc forwards bdrom scan progress to options.OnProgress, or
+// returns nil when the caller did not ask for progress.
+func scanProgressFunc(options Options) bdrom.ScanProgressFunc {
+	if options.OnProgress == nil {
+		return nil
+	}
+	return func(update bdrom.ScanProgress) {
+		stage, ok := stageFromScanProgress(update.Stage)
+		if !ok {
+			return
+		}
+		emit(options.OnProgress, ProgressEvent{
+			Stage:          stage,
+			Path:           options.Path,
+			Completed:      update.Completed,
+			Total:          update.Total,
+			ProcessedBytes: update.ProcessedBytes,
+			TotalBytes:     update.TotalBytes,
+			OccurredAt:     time.Now(),
+		})
 	}
 }
 

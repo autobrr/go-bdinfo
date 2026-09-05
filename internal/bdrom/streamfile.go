@@ -1,6 +1,7 @@
 package bdrom
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -546,10 +547,12 @@ func (s *StreamFile) DisplayName(settings settings.Settings) string {
 }
 
 func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
-	return s.ScanWithProgress(playlists, full, nil)
+	return s.ScanWithProgress(context.Background(), playlists, full, nil)
 }
 
-func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBytesProcessed func(uint64)) error {
+// ScanWithProgress reads the stream file in chunks. It checks ctx before each
+// chunk read and returns ctx.Err() as soon as the context is canceled.
+func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*PlaylistFile, full bool, onBytesProcessed func(uint64)) error {
 	if s.FileInfo == nil {
 		return nil
 	}
@@ -1005,6 +1008,9 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 		copy(buf, first[packetSize:])
 	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		n, err := f.Read(buf[carryLen : carryLen+chunkSize])
 		if n == 0 && err != nil {
 			break
