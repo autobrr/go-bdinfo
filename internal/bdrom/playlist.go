@@ -991,8 +991,9 @@ func streamTypeSortIndex(streamType stream.StreamType) int {
 }
 
 // UpdateGraphicsCaptions ports BDInfo's FormMain.UpdateSubtitleChapterCount. After a
-// full scan, each playlist PGS stream reports the sum of the caption counts of all
-// its clips and the first non-zero frame size.
+// stream scan, each playlist PGS stream reports the sum of the caption counts of all
+// its clips and the first non-zero frame size. The official CLI never runs this step
+// (see AGENTS.md, Output Quirks To Match).
 func (p *PlaylistFile) UpdateGraphicsCaptions() {
 	for _, st := range p.Streams {
 		if g, ok := st.(*stream.GraphicsStream); ok {

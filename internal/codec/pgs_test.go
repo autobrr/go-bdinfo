@@ -6,10 +6,10 @@ import (
 	"github.com/autobrr/go-bdinfo/internal/stream"
 )
 
-func pgsPCS(objects ...byte) []byte {
-	seg := []byte{0x07, 0x80, 0x04, 0x38, 0x10, 0x00, 0x01, 0x80, 0x00, 0x00, byte(len(objects))}
-	for _, cropped := range objects {
-		seg = append(seg, 0x00, 0x00, 0x00, cropped, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+func pgsPCS(forcedFlags ...byte) []byte {
+	seg := []byte{0x07, 0x80, 0x04, 0x38, 0x10, 0x00, 0x01, 0x80, 0x00, 0x00, byte(len(forcedFlags))}
+	for _, forced := range forcedFlags {
+		seg = append(seg, 0x00, 0x00, 0x00, forced, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 	}
 	return append([]byte{0x16, byte(len(seg) >> 8), byte(len(seg))}, seg...)
 }
