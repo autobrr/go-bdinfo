@@ -48,7 +48,7 @@ func TestStreamFileScan_StopsReadingAfterCancel(t *testing.T) {
 	for range 8 {
 		data = append(data, pkt[:]...)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	fi := &cancelOnReadFileInfo{memFileInfo: memFileInfo{name: "TEST.M2TS", data: data}, cancel: cancel}
 
@@ -65,7 +65,7 @@ func TestStreamFileScan_StopsReadingAfterCancel(t *testing.T) {
 }
 
 func TestRunParallel_SkipsItemsAfterCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	var calls atomic.Int32
@@ -79,7 +79,7 @@ func TestRunParallel_SkipsItemsAfterCancel(t *testing.T) {
 }
 
 func TestScan_CanceledContextReturnsScanError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	rom := testEpilogueBDROM()

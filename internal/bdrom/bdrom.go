@@ -182,9 +182,7 @@ loop:
 		case <-ctx.Done():
 			break loop
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
 			if err := fn(item); err != nil {
 				if onErr != nil && ctx.Err() == nil {
@@ -195,7 +193,7 @@ loop:
 			if onDone != nil {
 				onDone(item)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
