@@ -30,28 +30,51 @@ The scripts are in [`scripts/bench/`](../scripts/bench/).
 
 ## Results
 
-Median of 3 runs. The official binary ran once.
+Median of 3 runs. The official binary ran once. The official binary did not run on the .iso because the container cannot loop-mount an image.
 
-| Disc | Size | Tool | Wall s | User CPU s | Sys CPU s | Peak RSS MB |
-|---|---|---|---:|---:|---:|---:|
-| Zombeavers 2014 1080p (AVC, DTS-HD MA, PGS) | 29 GB | go-bdinfo | 145.7 | 10.5 | 35.1 | 52 |
-| | | Rust rewrite | 155.8 | 54.1 | 35.6 | 13 |
-| | | official | 150.0 | 40.6 | 27.4 | 284 |
-| Bad Hombres 2023 (MPEG-2 1080p, DTS-HD MA) | 19 GB | go-bdinfo | 90.8 | 7.0 | 20.4 | 58 |
-| | | Rust rewrite | 94.0 | 34.6 | 18.2 | 12 |
-| | | official | 101.5 | 28.0 | 16.0 | 195 |
-| Britney Spears Femme Fatale Tour (.iso, UDF 2.50) | 25 GB | go-bdinfo | 190.0 | 9.6 | 23.2 | 60 |
-| | | Rust rewrite | 197.4 | 45.6 | 23.6 | 15 |
-| | | official | not run: the container cannot loop-mount an image | | | |
-| The Naked Gun 2025 MULTI (AVC, TrueHD, 24 subtitle streams) | 37 GB | go-bdinfo | 147.3 | 15.4 | 35.7 | 61 |
-| | | Rust rewrite | 149.0 | 82.7 | 33.2 | 24 |
-| | | official | 176.5 | 62.5 | 31.0 | 909 |
-| Network 1976 1080p (AVC, LPCM) | 45 GB | go-bdinfo | 217.7 | 16.9 | 43.5 | 89 |
-| | | Rust rewrite | 227.9 | 86.2 | 41.7 | 34 |
-| | | official | 240.4 | 65.0 | 40.7 | 204 |
-| Justice League Part Three 2024 UHD (HEVC, Dolby Vision, DTS-HD MA) | 43 GB | go-bdinfo | 169.0 | 24.8 | 41.8 | 64 |
-| | | Rust rewrite | 167.1 | 87.6 | 39.1 | 16 |
-| | | official | 166.1 | 60.6 | 38.0 | 691 |
+Discs:
+
+| Disc | Size | Content |
+|---|---|---|
+| Zombeavers 2014 1080p | 29 GB | AVC, DTS-HD MA, PGS |
+| Bad Hombres 2023 | 19 GB | MPEG-2 1080p, DTS-HD MA |
+| Britney Spears Femme Fatale Tour | 25 GB | .iso, UDF 2.50 |
+| The Naked Gun 2025 MULTI | 37 GB | AVC, TrueHD, 24 subtitle streams |
+| Network 1976 1080p | 45 GB | AVC, LPCM |
+| Justice League Part Three 2024 UHD | 43 GB | HEVC, Dolby Vision, DTS-HD MA |
+
+Wall time, seconds:
+
+| Disc | go-bdinfo | Rust rewrite | official |
+|---|---:|---:|---:|
+| Zombeavers | 145.7 | 155.8 | 150.0 |
+| Bad Hombres | 90.8 | 94.0 | 101.5 |
+| Britney (.iso) | 190.0 | 197.4 | |
+| The Naked Gun | 147.3 | 149.0 | 176.5 |
+| Network 1080p | 217.7 | 227.9 | 240.4 |
+| Justice League UHD | 169.0 | 167.1 | 166.1 |
+
+User CPU, seconds:
+
+| Disc | go-bdinfo | Rust rewrite | official |
+|---|---:|---:|---:|
+| Zombeavers | 10.5 | 54.1 | 40.6 |
+| Bad Hombres | 7.0 | 34.6 | 28.0 |
+| Britney (.iso) | 9.6 | 45.6 | |
+| The Naked Gun | 15.4 | 82.7 | 62.5 |
+| Network 1080p | 16.9 | 86.2 | 65.0 |
+| Justice League UHD | 24.8 | 87.6 | 60.6 |
+
+Peak RSS, MB:
+
+| Disc | go-bdinfo | Rust rewrite | official |
+|---|---:|---:|---:|
+| Zombeavers | 52 | 13 | 284 |
+| Bad Hombres | 58 | 12 | 195 |
+| Britney (.iso) | 60 | 15 | |
+| The Naked Gun | 61 | 24 | 909 |
+| Network 1080p | 89 | 34 | 204 |
+| Justice League UHD | 64 | 16 | 691 |
 
 ## Findings
 
