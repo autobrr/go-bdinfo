@@ -1,8 +1,8 @@
 # Benchmarks
 
-Whole-disc scans of go-bdinfo against a BDInfo reference and a Rust rewrite of BDInfo, on real Blu-ray discs. This page contains a Linux HDD run from 2026-09-04 and a Windows NVMe run from 2026-09-06. The hosts and discs differ, so cross-host comparisons describe trends rather than absolute speedups.
+Whole-disc scans of go-bdinfo against a BDInfo reference and a Rust rewrite of BDInfo, on real Blu-ray discs. This page contains a Linux HDD run from 2026-09-04 and a Windows NVMe run from 2026-09-06 AEST (2026-09-05 UTC). The hosts and discs differ, so cross-host comparisons describe trends rather than absolute speedups.
 
-Summary: on the Linux HDD, go-bdinfo's wall time ranged from 1.2% higher to 6.5% lower than Rust's because storage was the limit. On the Windows NVMe, go-bdinfo used 11.8% to 46.1% less wall time than Rust. Go used the least CPU and Rust used the least memory in both runs.
+Summary: on the Linux HDD, go-bdinfo's median wall time ranged from 1.2% higher to 6.5% lower than Rust's because storage was the limit. On the Windows NVMe, go-bdinfo's per-disc median wall time was 11.8% to 46.1% lower than Rust's. Go used the least CPU and Rust used the least memory in both runs.
 
 ## Setup
 
@@ -24,7 +24,7 @@ Summary: on the Linux HDD, go-bdinfo's wall time ranged from 1.2% higher to 6.5%
 - Runs are sequential. Two tools never run at the same time.
 - Before every run the page cache of the disc is evicted with `posix_fadvise(POSIX_FADV_DONTNEED)` on every file of the disc. `/proc/sys/vm/drop_caches` is read-only inside the container. Eviction was verified: `Cached` in `/proc/meminfo` fell from 1.25 GB to 0.2 GB and a re-read of the same 1 GiB ran at cold disk speed again.
 - Timing comes from `getrusage(RUSAGE_CHILDREN)` after the child exits: wall time, user CPU, system CPU and peak resident set size.
-- Scans are disk-bound (about 96 % of the raw disk throughput), so wall time is mostly noise. The largest absolute deviation from a Go or Rust three-run median is 17.2 %. User CPU and peak RSS are the primary metrics.
+- Scans are disk-bound (about 96 % of the raw disk throughput), so wall time is mostly noise. The largest absolute deviation from a Go or Rust three-run median in this Linux run is 17.2 %. User CPU and peak RSS are the primary metrics.
 
 The scripts are in [`scripts/bench/`](../scripts/bench/).
 
@@ -130,7 +130,7 @@ jl3-uhd     off 166.11 60.55 37.98 707896 0
 
 ## Windows NVMe benchmark
 
-Run on 2026-09-06 from five complete BDMV folders staged on NVMe. The scan scope, filters, diagnostics, process order and cold-cache intent match the Linux benchmark. The different host and disc set make the comparison with the Linux run directional.
+Run on 2026-09-06 AEST (2026-09-05 UTC) from five complete BDMV folders staged on NVMe. The scan scope, filters, diagnostics, process order and cold-cache intent match the Linux benchmark. The different host and disc set make the comparison with the Linux run directional.
 
 ### Setup
 
@@ -199,7 +199,7 @@ Peak working set, MiB:
 
 ### Findings
 
-- On the Linux HDD, go-bdinfo's wall-time median ranged from 1.2% higher to 6.5% lower than Rust's. On the Windows NVMe, go-bdinfo completed every sample in 11.8% to 46.1% less wall time than Rust. This is consistent with faster storage exposing CPU work that the HDD run hid; the different hosts and samples do not support direct absolute-speed comparisons.
+- On the Linux HDD, go-bdinfo's wall-time median ranged from 1.2% higher to 6.5% lower than Rust's. On the Windows NVMe, go-bdinfo's per-disc median wall time was 11.8% to 46.1% lower than Rust's. This is consistent with faster storage exposing CPU work that the HDD run hid; the different hosts and samples do not support direct absolute-speed comparisons.
 - Rust used 2.5 to 8.0 times as much user CPU as go-bdinfo, while go-bdinfo used 2.0 to 3.4 times Rust's peak working set. This preserves the CPU/memory trade-off seen on Linux.
 - The three-run medians limit transient slow passes. The largest was Rust's third Live Free or Die Hard run at 43.16 seconds, compared with 22.00 and 22.38 seconds; its report was byte-identical and its process-read byte count was unchanged.
 - The single Windows-reference runs were slower and used more memory on these samples. They establish report behavior and are not repeated performance estimates.
