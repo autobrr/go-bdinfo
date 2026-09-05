@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -18,8 +19,16 @@ import (
 
 const productVersion = "0.8.0.0"
 
+// Output holds the text the CLI writes (Report) plus the --summaryonly and
+// --forumsonly blocks. See pkg/bdinfo.Result for the field contract.
+type Output struct {
+	Report       string
+	QuickSummary string
+	ForumsBlock  string
+}
+
 func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, scan bdrom.ScanResult, settings settings.Settings) (string, error) {
-	reportName, output, err := RenderReport(path, bd, playlists, scan, settings)
+	reportName, rendered, err := RenderReport(path, bd, playlists, scan, settings)
 	if err != nil {
 		return "", err
 	}
@@ -32,14 +41,16 @@ func WriteReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, 
 	}
 
 	if reportName == "-" {
-		_, err := os.Stdout.WriteString(output)
+		_, err := os.Stdout.WriteString(rendered.Report)
 		return reportName, err
 	}
 
-	return reportName, os.WriteFile(reportName, []byte(output), 0o644)
+	return reportName, os.WriteFile(reportName, []byte(rendered.Report), 0o644)
 }
 
-func RenderReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, scan bdrom.ScanResult, settings settings.Settings) (string, string, error) {
+// RenderReport renders the full report plus the quick-summary and forums
+// blocks in one pass, so a caller gets every block from one scan.
+func RenderReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, scan bdrom.ScanResult, settings settings.Settings) (string, Output, error) {
 	reportName := settings.ReportFileName
 	if strings.Contains(reportName, "{0}") {
 		reportName = strings.ReplaceAll(reportName, "{0}", bd.VolumeLabel)
@@ -59,10 +70,9 @@ func RenderReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile,
 		reportName = path
 	}
 
-	if settings.SummaryOnly {
-		output := buildSummaryOnly(bd, playlists, settings)
-		return reportName, output, nil
-	}
+	// Build the quick summary before the full report narrows playlists:
+	// --summaryonly ignores BigPlaylistOnly, and the CLI output must not change.
+	quickSummary := buildSummaryOnly(bd, playlists, settings)
 
 	var b strings.Builder
 	protection := "AACS"
@@ -516,13 +526,17 @@ func RenderReport(path string, bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile,
 		}
 	}
 
-	output := b.String()
-	if settings.SummaryOnly {
-		output = extractQuickSummary(output)
-	} else if settings.ForumsOnly {
-		output = extractForumsBlocks(output)
+	out := Output{
+		Report:       b.String(),
+		QuickSummary: quickSummary,
 	}
-	return reportName, output, nil
+	out.ForumsBlock = extractForumsBlocks(out.Report)
+	if settings.SummaryOnly {
+		out.Report = out.QuickSummary
+	} else if settings.ForumsOnly {
+		out.Report = out.ForumsBlock
+	}
+	return reportName, out, nil
 }
 
 func selectMainPlaylist(playlists []*bdrom.PlaylistFile, settings settings.Settings) []*bdrom.PlaylistFile {
@@ -633,22 +647,12 @@ func extractForumsBlocks(report string) string {
 	return out.String()
 }
 
-func extractQuickSummary(report string) string {
-	const marker = "QUICK SUMMARY:"
-	start := strings.Index(report, marker)
-	if start == -1 {
-		return report
-	}
-	out := strings.TrimSpace(report[start:])
-	if out == "" {
-		return report
-	}
-	return out + "\n"
-}
-
 func buildSummaryOnly(bd *bdrom.BDROM, playlists []*bdrom.PlaylistFile, settings settings.Settings) string {
 	if settings.MainPlaylistOnly {
 		playlists = selectMainPlaylist(playlists, settings)
+	} else {
+		// Sort a copy: the caller's order feeds the full report and Result.Playlists.
+		playlists = slices.Clone(playlists)
 	}
 
 	sort.SliceStable(playlists, func(i, j int) bool {
