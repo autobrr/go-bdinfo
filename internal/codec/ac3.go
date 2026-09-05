@@ -121,7 +121,7 @@ func ScanAC3(a *stream.AudioStream, data []byte) {
 	sawIndependent := false
 	for offset := findAC3Sync(data); offset >= 0 && offset+7 <= len(data); {
 		dependent := isDependentEAC3Header(data[offset:])
-		if a.IsInitialized && !dependent {
+		if a.IsInitialized && (!dependent || a.StreamType != stream.StreamTypeAC3PlusAudio) {
 			return
 		}
 
@@ -129,19 +129,15 @@ func ScanAC3(a *stream.AudioStream, data []byte) {
 		var ok bool
 		if dependent && !sawIndependent {
 			frameSize, ok = ac3FrameSize(data[offset:])
-			ok = ok && frameSize >= 7
 		} else {
 			frameSize, ok = scanAC3Frame(a, data[offset:], sawIndependent)
 			if ok && !dependent {
 				sawIndependent = true
 			}
-			if ok && a.IsInitialized && a.StreamType != stream.StreamTypeAC3PlusAudio {
-				return
-			}
 		}
 
 		next := offset + 2
-		if ok && frameSize > 0 {
+		if ok {
 			next = offset + frameSize
 		}
 		if next <= offset || next >= len(data) {
@@ -178,8 +174,7 @@ func scanAC3Frame(a *stream.AudioStream, data []byte, sawIndependent bool) (int,
 		return 0, false
 	}
 	frameSizeBytes, ok := ac3FrameSize(data)
-	if !ok || frameSizeBytes < 7 {
-		// A frame smaller than its own header (E-AC-3 frmsiz 0/1) is a false sync.
+	if !ok {
 		return 0, false
 	}
 	if len(data) < frameSizeBytes {
@@ -209,6 +204,7 @@ func scanAC3Frame(a *stream.AudioStream, data []byte, sawIndependent bool) (int,
 		dialNormExt   uint64
 		numBlocks     uint64
 		bsid          uint64
+		frameType     uint64
 	)
 
 	_ = read(16) // sync
@@ -269,7 +265,7 @@ func scanAC3Frame(a *stream.AudioStream, data []byte, sawIndependent bool) (int,
 			}
 		}
 	} else {
-		frameType := read(2)
+		frameType = read(2)
 		_ = read(3) // substreamid
 		frameSize = (read(11) + 1) << 1
 		srCode = read(2)
@@ -391,9 +387,12 @@ func scanAC3Frame(a *stream.AudioStream, data []byte, sawIndependent bool) (int,
 			a.BitRate = int64(ac3BitrateKbps[fSize] * 1000)
 		}
 	} else if a.SampleRate > 0 && numBlocks > 0 {
-		a.BitRate = int64(4.0 * float64(frameSize) * float64(a.SampleRate) / (float64(numBlocks) * 256))
-		if a.CoreStream != nil {
-			a.BitRate += a.CoreStream.BitRate
+		frameRate := int64(4.0 * float64(frameSize) * float64(a.SampleRate) / (float64(numBlocks) * 256))
+		if frameType == 1 && a.CoreStream != nil {
+			// Each dependent substream adds its own rate to the independent frame's.
+			a.BitRate += frameRate
+		} else {
+			a.BitRate = frameRate
 		}
 	}
 
@@ -452,8 +451,12 @@ func ac3FrameSize(data []byte) (int, bool) {
 	if bsid > 16 {
 		return 0, false
 	}
-	frameSize := ((int(data[2]&0x07) << 8) | int(data[3])) + 1
-	return frameSize << 1, true
+	frameSize := (((int(data[2]&0x07) << 8) | int(data[3])) + 1) << 1
+	if frameSize < 7 {
+		// A frame smaller than its own header (E-AC-3 frmsiz 0/1) is a false sync.
+		return 0, false
+	}
+	return frameSize, true
 }
 
 func findEmdfSync(data []byte, startBit int) (int, bool) {

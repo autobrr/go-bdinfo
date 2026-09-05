@@ -226,6 +226,9 @@ func TestScanAC3_AC3PlusMultipleDependentSubstreams(t *testing.T) {
 	if a.CoreStream == nil || a.CoreStream.ChannelCount != 5 {
 		t.Fatalf("core stream must be the independent-frame snapshot, got %+v", a.CoreStream)
 	}
+	if a.BitRate != 1728000 {
+		t.Fatalf("bitrate got %d want 1728000 (independent + both dependents)", a.BitRate)
+	}
 }
 
 // Dependent frames with no preceding independent frame (buffer starts mid
