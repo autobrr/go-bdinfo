@@ -175,6 +175,9 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 		OccurredAt: time.Now(),
 	})
 	scan := rom.ScanMetadataWithProgress(ctx, scanProgressFunc(options))
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 
 	emit(options.OnProgress, ProgressEvent{
 		Stage:      StageScanComplete,
@@ -184,10 +187,6 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 		Elapsed:    time.Since(start),
 		OccurredAt: time.Now(),
 	})
-
-	if err := ctx.Err(); err != nil {
-		return Result{}, err
-	}
 
 	playlists := orderedPlaylists(rom)
 	result := Result{
@@ -256,6 +255,9 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		OccurredAt: time.Now(),
 	})
 	scan := rom.ScanWithProgress(ctx, scanProgressFunc(options))
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 
 	emit(options.OnProgress, ProgressEvent{
 		Stage:      StageScanComplete,
@@ -265,10 +267,6 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		Elapsed:    time.Since(start),
 		OccurredAt: time.Now(),
 	})
-
-	if err := ctx.Err(); err != nil {
-		return Result{}, err
-	}
 
 	playlists := orderedPlaylists(rom)
 	emit(options.OnProgress, ProgressEvent{

@@ -11,30 +11,26 @@ import (
 	"github.com/autobrr/go-bdinfo/internal/stream"
 )
 
-// cancelOnReadFileInfo cancels the context on the first chunk read of the scan
-// loop, so the loop must notice the cancel before the next chunk read. The scan
-// opens the file twice: the PMT order probe first, then the scan loop. Only the
-// second open is counted, and only its multi-megabyte chunk reads.
+// cancelOnReadFileInfo cancels the context on the first multi-megabyte chunk
+// read, whichever loop issues it. The scan opens the file twice: the PMT order
+// probe first, then the scan loop. Both must stop before their next chunk read.
 type cancelOnReadFileInfo struct {
 	memFileInfo
 	cancel     context.CancelFunc
-	opens      int
 	chunkReads int
 }
 
 func (c *cancelOnReadFileInfo) OpenRead() (io.ReadCloser, error) {
-	c.opens++
-	return io.NopCloser(&cancelReader{r: bytes.NewReader(c.data), fi: c, scanLoop: c.opens == 2}), nil
+	return io.NopCloser(&cancelReader{r: bytes.NewReader(c.data), fi: c}), nil
 }
 
 type cancelReader struct {
-	r        io.Reader
-	fi       *cancelOnReadFileInfo
-	scanLoop bool
+	r  io.Reader
+	fi *cancelOnReadFileInfo
 }
 
 func (c *cancelReader) Read(p []byte) (int, error) {
-	if c.scanLoop && len(p) >= 1<<20 {
+	if len(p) >= 1<<20 {
 		c.fi.chunkReads++
 		c.fi.cancel()
 	}
@@ -59,6 +55,7 @@ func TestStreamFileScan_StopsReadingAfterCancel(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ScanWithProgress() error = %v, want context.Canceled", err)
 	}
+	// One read cancels; the PMT probe and the scan loop must both stop there.
 	if fi.chunkReads != 1 {
 		t.Fatalf("chunk reads = %d, want 1 (scan kept reading after cancel)", fi.chunkReads)
 	}

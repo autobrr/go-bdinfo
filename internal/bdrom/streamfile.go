@@ -132,7 +132,7 @@ func parsePATPMTPIDSection(section []byte) (uint16, bool) {
 	return 0, false
 }
 
-func detectPMTStreamOrder(fileInfo fs.FileInfo) ([]uint16, bool) {
+func detectPMTStreamOrder(ctx context.Context, fileInfo fs.FileInfo) ([]uint16, bool) {
 	if fileInfo == nil {
 		return nil, false
 	}
@@ -242,6 +242,9 @@ func detectPMTStreamOrder(fileInfo fs.FileInfo) ([]uint16, bool) {
 
 	readCount := 0
 	for {
+		if ctx.Err() != nil {
+			return nil, false
+		}
 		n, err := f.Read(buf[carryLen : carryLen+chunkSize])
 		if n == 0 && err != nil {
 			break
@@ -605,7 +608,7 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 	if fileInfo == nil {
 		return fmt.Errorf("missing stream file info")
 	}
-	initialPMTOrder, _ := detectPMTStreamOrder(fileInfo)
+	initialPMTOrder, _ := detectPMTStreamOrder(ctx, fileInfo)
 
 	f, err := fileInfo.OpenRead()
 	if err != nil {
@@ -1112,7 +1115,7 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 
 	s.finalizePlaylistVBR(playlists)
 	if len(pmtStreamOrder) == 0 {
-		if detectedOrder, ok := detectPMTStreamOrder(fileInfo); ok {
+		if detectedOrder, ok := detectPMTStreamOrder(ctx, fileInfo); ok {
 			pmtStreamOrder = detectedOrder
 		}
 	}
