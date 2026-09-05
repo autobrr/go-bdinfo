@@ -30,7 +30,7 @@ The scripts are in [`scripts/bench/`](../scripts/bench/).
 
 ## Results
 
-Median of 3 runs. The official binary ran once. The official binary did not run on the .iso because the container cannot loop-mount an image.
+Median of 3 runs. The official binary ran once. The official binary did not run on the .iso because the container cannot loop-mount an image. Lower is better in every table.
 
 Discs:
 
