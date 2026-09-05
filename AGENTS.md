@@ -3,46 +3,10 @@
 ## Overview
 This project is a Go implementation of BDInfo, a tool for analyzing Blu-ray disc structures. The original is written in C# and we're creating a pure Go version without CGO dependencies.
 
-**IMPORTANT**: Always refer to the original C# source code for implementation guidance. Workspace convention:
-- C# reference source: `~/github/oss/BDInfo-src/BDInfo.Core/BDCommon/rom/` (clone UniqProject/BDInfo if missing)
+## Goal: accurate output
+Official BDInfo was the parity oracle during the port, not the specification. Where BDInfo is correct, match its report text byte for byte. Where BDInfo contradicts the format specification (MPEG-TS, MPLS, CLPI, codec bitstreams, PGS), follow the specification and record the delta under [Known Divergences](#known-divergences-bdinfo-bugs-fixed-in-go).
 
-## Parity Loop (Official BDInfo)
-Loop-to-done: generate official report + our report for the same disc path (folder or ISO), `diff -u --text`, fix mismatches, add regression tests.
-
-Commands:
-```bash
-off=~/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo
-disc="/mnt/storage/torrents/<disc-folder-or-iso>"
-out=/tmp/bdinfo-parity
-mkdir -p "$out"
-
-"$off" -p "$disc" -o "$out/official.txt"
-go build -o /tmp/bdinfo ./cmd/bdinfo
-/tmp/bdinfo -p "$disc" -o "$out/ours.txt"
-
-diff -u --text "$out/official.txt" "$out/ours.txt"
-```
-
-Notes:
-- IO: don’t sweep all of `/mnt/storage/torrents*`; sample a few discs per type.
-- ISO/UDF: BD-ROM ISOs commonly use a metadata partition map and multi-extent files; UDF reads must be concurrency-safe (use `ReadAt`-based access, no shared `Seek`).
-- Speed loop: always measure official vs ours on the same sample path and compare wall time with exact command logs.
-- Current perf policy: stream scans default to 1 worker (override with `BDINFO_WORKERS`) to avoid seek thrash on this storage profile.
-- Harness: `scripts/speed_parity_loop.sh --disc "<disc-or-iso>" --reps 3` (matched toggles, per-rep parity check, median ratio).
-- Diagnostics parity loop: derive stream diagnostics order from PMT stream order probe (`detectPMTStreamOrder`) with scan/CLPI fallback; verify on both anchors:
-  - Network UHD (`00007/00009` hidden DV ordering)
-  - Excalibur UHD (`00004` DV + audio/PGS ordering)
-- Playlist same-language ordering parity: for English audio/graphics/text streams of same type, keep PID ascending (regression anchor: `The.Man.Who.Wasnt.There...`, 39.435 kbps subtitle before 68.796 kbps).
-- Perf hotspot loop: if Network-like discs regress, check `internal/bdrom/streamfile.go` clip-target matching path first (active target cursor), then re-run harness.
-- Sample cadence: smoke with `--reps 1` on ISO + Static + Network, then `--reps 3` on the regressing sample.
-- Debug helper: `go run ./cmd/debugudf -iso "<path>.iso"` (lists key dirs/files, sanity-checks headers/sizes).
-
-The C# code serves as the authoritative reference for:
-- Binary format specifications
-- Parsing algorithms
-- Codec analysis logic
-- Output format compatibility
-- Edge case handling
+The C# source is the reference for the port: parsing algorithms, codec analysis, report text layout, edge cases. The format specifications are the reference for correctness.
 
 ## Original BDInfo Features
 - Scans Blu-ray discs (Full HD, Ultra HD, 3D) from folders or ISO files
@@ -278,22 +242,24 @@ See [plan.md](plan.md) for detailed implementation plan and remaining work.
 - Patent-free codec documentation
 
 ## Development Workflow
-1. Always check original C# implementation in `~/github/oss/BDInfo-src/BDInfo.Core/BDCommon/rom/`
+1. Check the original C# implementation in `~/github/oss/BDInfo-src/BDInfo.Core/BDCommon/rom/`
 2. Write tests before implementation
 3. Use standard Go conventions
 4. Document codec-specific quirks
-5. Maintain compatibility with original output formats
-6. **Debug Tools**: Name temporary debug commands with prefixes like `test`, `debug`, or `check` (e.g., `cmd/teststream/`, `cmd/debugfids/`) so they can be easily identified and deleted later
+5. **Debug Tools**: Name temporary debug commands with prefixes like `test`, `debug`, or `check` (e.g., `cmd/teststream/`, `cmd/debugfids/`) so they can be easily identified and deleted later
 
 ## Parity Loop (Official BDInfo)
-Goal: 1:1 parity with official BDInfo report text. Loop-to-done: run parity checks after changes; land regression tests when it fits.
+Report text identical to official BDInfo except the Known Divergences. Loop-to-done: run parity checks after changes, classify every diff line as a Go bug, a BDInfo bug, or a known divergence, fix the Go bugs, and land regression tests.
 
 ### Official Binary + Source
 - Official Linux BDInfo binary (workspace convention): `~/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo`
-- C# reference source: `~/github/oss/BDInfo-src/BDInfo.Core/BDCommon/rom/`
+- C# reference source: `~/github/oss/BDInfo-src/BDInfo.Core/BDCommon/rom/` (clone UniqProject/BDInfo if missing)
+
+### Known Divergences (BDInfo bugs fixed in Go)
+- PGS descriptions (`1920x1080 / N Captions`): the official Linux CLI leaves the cell empty because only the GUI runs `FormMain.UpdateSubtitleChapterCount`. Go ports `TSCodecPGS.Scan` (`internal/codec/pgs.go`) and the GUI sum (`PlaylistFile.UpdateGraphicsCaptions`) so the CLI report carries the value.
+- PGS PCS cropping fields: BDInfo reads the 8-byte cropping rectangle on every composition object; the PGS format carries it only when `object_cropped_flag` (0x80) is set. Go reads it conditionally (`internal/codec/pgs.go`), so caption counts can differ on multi-object compositions.
 
 ### Output Quirks To Match (Gotchas)
-- PGS descriptions (`1920x1080 / N Captions`): deliberate departure from the official Linux CLI, which leaves the cell empty because only the GUI runs `FormMain.UpdateSubtitleChapterCount`. Go ports `TSCodecPGS.Scan` (`internal/codec/pgs.go`) and the GUI sum (`PlaylistFile.UpdateGraphicsCaptions`), so the parity oracle diffs on this cell for any disc with PGS. Counts follow the reference quirk of one segment per PES transfer, but PCS cropping fields are parsed per the PGS format (BDInfo reads them unconditionally), so counts can differ from the GUI on multi-object compositions.
 - Hidden-tracks note: official inserts `\\n\\r\\n` before `(*) Indicates included stream hidden by this playlist.` when `playlist.HasHiddenTracks` is true. See `internal/report/report.go`.
 - Chapter stats: official `Avg Frame Size` depends on per-transfer `StreamTag` from codec scan; do not default missing tags to `"I"`. Tag parse lives in `internal/bdrom/streamfile.go` (ported from `TSCodecAVC.cs`, `TSCodecMPEG2.cs`, `TSCodecVC1.cs`).
 - Stream Diagnostics timing: official uses `clip.StreamFile.Length` (TSStreamFile.Length), which is DTS-derived and stays `0` unless at least 2 DTS-bearing timestamps are observed. Do not seed `StreamFile.Length` from playlist clip length (tiny/partial captures differ). See `internal/bdrom/streamfile.go`.
@@ -303,17 +269,32 @@ Goal: 1:1 parity with official BDInfo report text. Loop-to-done: run parity chec
   - Go impl: `internal/codec/hevc_tag.go` + `internal/bdrom/streamfile.go` (5MB pre-init buffer, shrink after SPS). Test: `internal/codec/hevc_tag_test.go`.
 
 ### Quick Manual Parity Check (Report Text)
-Sample disc (avoid full dataset sweeps; pick 1-2 discs): `/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT`
+Sample 1-2 discs, never the full dataset.
 
-Generate official + ours and diff:
-```sh
-disc=/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT
+```bash
 off=~/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo
+disc=/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT
+out=/tmp/bdinfo-parity
+mkdir -p "$out"
 
-$off -p "$disc" -o /tmp/bdinfo-parity/official.txt
-go run ./cmd/bdinfo -p "$disc" -o /tmp/bdinfo-parity/ours.txt
-diff -u /tmp/bdinfo-parity/official.txt /tmp/bdinfo-parity/ours.txt
+"$off" -p "$disc" -o "$out/official.txt"
+go run ./cmd/bdinfo -p "$disc" -o "$out/ours.txt"
+
+diff -u --text "$out/official.txt" "$out/ours.txt"
 ```
+
+Notes:
+- ISO/UDF: BD-ROM ISOs commonly use a metadata partition map and multi-extent files; UDF reads must be concurrency-safe (use `ReadAt`-based access, no shared `Seek`).
+- Speed loop: always measure official vs ours on the same sample path and compare wall time with exact command logs.
+- Current perf policy: stream scans default to 1 worker (override with `BDINFO_WORKERS`) to avoid seek thrash on this storage profile.
+- Harness: `scripts/speed_parity_loop.sh --disc "<disc-or-iso>" --reps 3` (matched toggles, per-rep parity check, median ratio).
+- Diagnostics parity loop: derive stream diagnostics order from PMT stream order probe (`detectPMTStreamOrder`) with scan/CLPI fallback; verify on both anchors:
+  - Network UHD (`00007/00009` hidden DV ordering)
+  - Excalibur UHD (`00004` DV + audio/PGS ordering)
+- Playlist same-language ordering parity: for English audio/graphics/text streams of same type, keep PID ascending (regression anchor: `The.Man.Who.Wasnt.There...`, 39.435 kbps subtitle before 68.796 kbps).
+- Perf hotspot loop: if Network-like discs regress, check `internal/bdrom/streamfile.go` clip-target matching path first (active target cursor), then re-run harness.
+- Sample cadence: smoke with `--reps 1` on ISO + Static + Network, then `--reps 3` on the regressing sample.
+- Debug helper: `go run ./cmd/debugudf -iso "<path>.iso"` (lists key dirs/files, sanity-checks headers/sizes).
 
 ### Slow Oracle Test (Fuzzy Normalized)
 Test: `internal/parity/bdinfo_parity_test.go` (gated; normalizes line endings/trailing whitespace).
