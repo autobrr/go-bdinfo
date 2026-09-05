@@ -18,6 +18,10 @@ const (
 	maxStreamDataVideo = 5 * 1024 * 1024
 	maxStreamDataAudio = 256 * 1024
 	maxStreamDataOther = 128 * 1024
+	// maxPGSTransferHead bounds the bytes kept per PGS PES transfer. BDInfo reads only
+	// the first segment of each transfer. A PCS is 14 bytes plus 16 per composition
+	// object, so 256 bytes covers 15 objects; real discs use one or two.
+	maxPGSTransferHead = 256
 	maxTSPID           = 8192
 	unknownStatePID    = uint16(0xFFFF)
 )
@@ -381,6 +385,13 @@ type streamState struct {
 	pesStarted          bool
 	pesStartCount       uint64
 	collectDiagnostics  bool
+	// pgs and pgsBuf hold the PGS stream and the head of its current PES transfer.
+	// BDInfo runs TSCodecPGS.Scan per transfer and only reads its first segment.
+	pgs    *stream.GraphicsStream
+	pgsBuf []byte
+	// transferEnds records where each PES transfer ends inside codecData for DTS-HD
+	// streams, so the codec scan can keep BDInfo's per-transfer DTS:X search window.
+	transferEnds []int
 }
 
 type scanClipTarget struct {
@@ -629,12 +640,29 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 				dataCap = maxStreamDataVideo
 			case st.Base().IsAudioStream():
 				dataCap = maxStreamDataAudio
+			case st.Base().IsGraphicsStream():
+				dataCap = 0 // PGS scans per transfer from pgsBuf; IGS has no codec scan.
 			}
 		}
 		state := &streamState{
-			codecData:          getCodecBuffer(dataCap),
 			pesPacketRemaining: -2,
 			collectDiagnostics: collectDiagnostics,
+		}
+		if dataCap > 0 {
+			state.codecData = getCodecBuffer(dataCap)
+		}
+		if st != nil {
+			switch st.Base().StreamType {
+			case stream.StreamTypePresentationGraphics:
+				if g, ok := st.(*stream.GraphicsStream); ok {
+					// Streams persist across scans of the same file; a rescan must not double count.
+					g.Captions, g.ForcedCaptions, g.LastFrame = 0, 0, stream.PGSFrame{}
+					state.pgs = g
+					state.pgsBuf = make([]byte, 0, maxPGSTransferHead)
+				}
+			case stream.StreamTypeDTSHDAudio, stream.StreamTypeDTSHDMasterAudio, stream.StreamTypeDTSHDSecondaryAudio:
+				state.transferEnds = make([]int, 0, 8)
+			}
 		}
 		states[pid] = state
 		if int(pid) < maxTSPID {
@@ -734,6 +762,7 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 
 		if isPESStart {
 			state.pesStartCount++
+			state.endTransfer()
 
 			// Match BDInfo: HEVC per-transfer tags are derived from the previous PES transfer
 			// (ScanStream runs when a new payload starts, ending the prior transfer).
@@ -935,6 +964,9 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 		if state.pesPacketRemaining > 0 {
 			state.pesPacketRemaining -= len(payload)
 		}
+		if state.pgsBuf != nil {
+			state.pgsBuf = append(state.pgsBuf, payload[:min(cap(state.pgsBuf)-len(state.pgsBuf), len(payload))]...)
+		}
 		if state.codecData != nil && len(payload) > 0 {
 			dataCap := cap(state.codecData)
 			if len(state.codecData) < dataCap {
@@ -944,6 +976,9 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 				}
 				state.codecData = append(state.codecData, payload...)
 			}
+		}
+		if state.pesPacketRemaining == 0 {
+			state.endTransfer()
 		}
 	}
 
@@ -1054,14 +1089,18 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 			case stream.StreamTypeDTSAudio:
 				codec.ScanDTS(concrete, data, int64(concrete.BitRate))
 			case stream.StreamTypeDTSHDAudio, stream.StreamTypeDTSHDMasterAudio, stream.StreamTypeDTSHDSecondaryAudio:
-				codec.ScanDTSHD(concrete, data, int64(concrete.BitRate))
+				codec.ScanDTSHD(concrete, data, state.transferEnds, int64(concrete.BitRate))
 			case stream.StreamTypeLPCMAudio:
 				codec.ScanLPCM(concrete, data)
 			case stream.StreamTypeMPEG2AACAudio, stream.StreamTypeMPEG4AACAudio:
 				codec.ScanAAC(concrete, data)
 			}
 		case *stream.GraphicsStream:
-			codec.ScanPGS(concrete, data)
+			// Match BDInfo: PGS is initialized by its first PCS (see endTransfer);
+			// IGS is marked initialized as-is.
+			if state.pgsBuf == nil {
+				concrete.IsInitialized = true
+			}
 		}
 	}
 
@@ -1110,6 +1149,23 @@ func (s *StreamFile) ScanWithProgress(playlists []*PlaylistFile, full bool, onBy
 	}
 
 	return nil
+}
+
+// endTransfer runs when a PES transfer completes, either at its declared length or
+// when the next payload unit starts. It mirrors BDInfo's per-transfer ScanStream for
+// PGS and records the transfer boundary for DTS-HD.
+func (state *streamState) endTransfer() {
+	if len(state.pgsBuf) > 0 {
+		codec.ScanPGS(state.pgs, state.pgsBuf)
+		state.pgsBuf = state.pgsBuf[:0]
+	}
+	if state.transferEnds == nil {
+		return
+	}
+	n := len(state.codecData)
+	if len(state.transferEnds) == 0 || state.transferEnds[len(state.transferEnds)-1] < n {
+		state.transferEnds = append(state.transferEnds, n)
+	}
 }
 
 func (s *StreamFile) handleTimestamp(playlists []*PlaylistFile, clipTargets []scanClipTarget, clipCursor *clipTargetCursor, states map[uint16]*streamState, pid uint16, state *streamState, ts uint64, dtsForLength uint64, isVideo bool, firstDTS *uint64, lastDTS *uint64) {

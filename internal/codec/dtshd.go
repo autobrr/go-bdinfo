@@ -13,7 +13,11 @@ var dtsHdSampleRates = []int{
 	0x2B110, 0x56220, 0x2EE0, 0x5DC0, 0x0BB80, 0x17700, 0x2EE00, 0x5DC00,
 }
 
-func ScanDTSHD(a *stream.AudioStream, data []byte, fallbackBitrate int64) {
+// ScanDTSHD scans data whose PES transfers end at the offsets in transferEnds.
+// BDInfo scans one transfer at a time and stops after the first HD frame, so the
+// DTS:X pattern search must stay inside the transfer that holds the first HD
+// sync. With a nil transferEnds the search covers all of data.
+func ScanDTSHD(a *stream.AudioStream, data []byte, transferEnds []int, fallbackBitrate int64) {
 	if a.IsInitialized && (a.StreamType == stream.StreamTypeDTSHDSecondaryAudio || (a.CoreStream != nil && a.CoreStream.IsInitialized)) {
 		return
 	}
@@ -248,7 +252,7 @@ func ScanDTSHD(a *stream.AudioStream, data []byte, fallbackBitrate int64) {
 		}
 	}
 
-	a.HasExtensions = detectDTSX(data[syncOffset:])
+	a.HasExtensions = detectDTSX(data[syncOffset:transferEnd(syncOffset, transferEnds, len(data))])
 
 	if a.CoreStream != nil && a.CoreStream.AudioMode == stream.AudioModeExtended && a.ChannelCount == 5 {
 		a.AudioMode = stream.AudioModeExtended
@@ -300,6 +304,17 @@ func dtsHDSpeakerActivityMaskChannelLayout(mask uint16) string {
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// transferEnd returns the end of the transfer that contains offset, or n when
+// transfer boundaries are unknown.
+func transferEnd(offset int, transferEnds []int, n int) int {
+	for _, end := range transferEnds {
+		if end > offset {
+			return min(end, n)
+		}
+	}
+	return n
 }
 
 func detectDTSX(data []byte) bool {

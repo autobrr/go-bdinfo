@@ -52,6 +52,10 @@ Path is required (ISO file or Blu-ray folder).
 
 Report default: `BDInfo_{0}.bdinfo` (disc label substituted).
 
+## Performance
+
+A full-disc scan runs at the speed of the disk. go-bdinfo matches the official BDInfo 2.0.5 CLI on wall time and report content, with 2.4 to 4.1 times less CPU and 2 to 15 times less memory. See [docs/benchmarks.md](docs/benchmarks.md) for discs, method, raw numbers and the parity diff.
+
 ## Library Usage
 
 Use the exported API package instead of importing `internal/*`:

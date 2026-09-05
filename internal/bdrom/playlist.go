@@ -606,8 +606,6 @@ func (p *PlaylistFile) loadStreamClips() {
 						ex.ForcedCaptions = cs.ForcedCaptions
 						ex.Width = cs.Width
 						ex.Height = cs.Height
-						ex.CaptionIDs = cs.CaptionIDs
-						ex.LastFrame = cs.LastFrame
 					}
 				}
 			}
@@ -989,5 +987,40 @@ func streamTypeSortIndex(streamType stream.StreamType) int {
 		return 3
 	default:
 		return 0
+	}
+}
+
+// UpdateGraphicsCaptions ports BDInfo's FormMain.UpdateSubtitleChapterCount. After a
+// stream scan, each playlist PGS stream reports the sum of the caption counts of all
+// its clips and the first non-zero frame size. The official CLI never runs this step
+// (see AGENTS.md, Output Quirks To Match).
+func (p *PlaylistFile) UpdateGraphicsCaptions() {
+	for _, st := range p.Streams {
+		if g, ok := st.(*stream.GraphicsStream); ok {
+			g.Captions, g.ForcedCaptions, g.Width, g.Height = 0, 0, 0, 0
+		}
+	}
+	for _, clip := range p.StreamClips {
+		if clip == nil || clip.StreamFile == nil {
+			continue
+		}
+		for pid, st := range clip.StreamFile.Streams {
+			cs, ok := st.(*stream.GraphicsStream)
+			if !ok {
+				continue
+			}
+			pl, ok := p.Streams[pid].(*stream.GraphicsStream)
+			if !ok {
+				continue
+			}
+			pl.Captions += cs.Captions
+			pl.ForcedCaptions += cs.ForcedCaptions
+			if pl.Width == 0 && cs.Width > 0 {
+				pl.Width = cs.Width
+			}
+			if pl.Height == 0 && cs.Height > 0 {
+				pl.Height = cs.Height
+			}
+		}
 	}
 }
