@@ -8,8 +8,11 @@ import (
 
 func pgsPCS(forcedFlags ...byte) []byte {
 	seg := []byte{0x07, 0x80, 0x04, 0x38, 0x10, 0x00, 0x01, 0x80, 0x00, 0x00, byte(len(forcedFlags))}
-	for _, forced := range forcedFlags {
-		seg = append(seg, 0x00, 0x00, 0x00, forced, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+	for _, flags := range forcedFlags {
+		seg = append(seg, 0x00, 0x00, 0x00, flags, 0, 0, 0, 0)
+		if flags&0x80 == 0x80 {
+			seg = append(seg, 0, 0, 0, 0, 0, 0, 0, 0)
+		}
 	}
 	return append([]byte{0x16, byte(len(seg) >> 8), byte(len(seg))}, seg...)
 }
@@ -19,8 +22,8 @@ func TestScanPGS(t *testing.T) {
 	end := []byte{0x80, 0x00, 0x00}
 	g := stream.NewGraphicsStream()
 	for _, transfer := range [][]byte{
-		pgsPCS(0x00), ods, end, // normal caption
-		pgsPCS(0x40), ods, ods, end, // forced, ODS split in two fragments counts twice
+		pgsPCS(0xC0, 0x00), ods, end, // cropped forced object, then plain: last object wins
+		pgsPCS(0x00, 0x40), ods, ods, end, // forced, ODS split in two fragments counts twice
 		pgsPCS(), ods, // empty composition after END: not counted
 	} {
 		ScanPGS(g, transfer)

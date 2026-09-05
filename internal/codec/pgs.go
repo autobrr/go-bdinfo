@@ -7,8 +7,9 @@ import (
 
 // ScanPGS ports BDInfo's TSCodecPGS.Scan. BDInfo runs it once per completed
 // PES transfer and reads only the first segment of that transfer, so caption
-// counts depend on how the disc splits segments across PES packets. Keep that
-// behavior: it is what the official report shows.
+// counts depend on how the disc splits segments across PES packets. Unlike
+// BDInfo, the PCS object cropping fields are read only when the cropped flag is
+// set, as the PGS format requires.
 func ScanPGS(g *stream.GraphicsStream, data []byte) {
 	r := buffer.NewBitReader(data)
 	segmentType, _ := r.ReadByteValue()
@@ -35,7 +36,10 @@ func ScanPGS(g *stream.GraphicsStream, data []byte) {
 		for range n {
 			r.Skip(3) // object ID, window ID
 			forced, _ := r.ReadByteValue()
-			r.Skip(12) // positions and cropping
+			r.Skip(4) // horizontal and vertical position
+			if forced&0x80 == 0x80 {
+				r.Skip(8) // cropping rectangle, present only when the object is cropped
+			}
 			g.LastFrame = stream.PGSFrame{Forced: forced&0x40 == 0x40}
 		}
 	case 0x80: // END

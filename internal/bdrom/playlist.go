@@ -997,7 +997,7 @@ func streamTypeSortIndex(streamType stream.StreamType) int {
 func (p *PlaylistFile) UpdateGraphicsCaptions() {
 	for _, st := range p.Streams {
 		if g, ok := st.(*stream.GraphicsStream); ok {
-			g.Captions, g.ForcedCaptions = 0, 0
+			g.Captions, g.ForcedCaptions, g.Width, g.Height = 0, 0, 0, 0
 		}
 	}
 	for _, clip := range p.StreamClips {
