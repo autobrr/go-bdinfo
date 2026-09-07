@@ -28,9 +28,11 @@ func ScanPGS(g *stream.GraphicsStream, data []byte) {
 		}
 	case 0x16: // PCS: Presentation Composition Segment
 		r.Skip(2) // segment size
-		width, _ := r.ReadUInt16()
-		height, _ := r.ReadUInt16()
-		if !g.IsInitialized {
+		width, okWidth := r.ReadUInt16()
+		height, okHeight := r.ReadUInt16()
+		// Divergence from BDInfo: ReadPCS initializes the stream even when the
+		// segment is truncated, which locks in a 0x0 size. Require both reads.
+		if !g.IsInitialized && okWidth && okHeight {
 			g.Width, g.Height = int(width), int(height)
 			g.IsInitialized = true
 		}
