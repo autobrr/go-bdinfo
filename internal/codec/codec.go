@@ -1,3 +1,6 @@
+// Copyright (c) 2026, s0up and the autobrr contributors.
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 package codec
 
 // RemoveEmulationBytes strips 0x03 after 0x0000 sequences.

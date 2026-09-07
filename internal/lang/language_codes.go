@@ -1,3 +1,6 @@
+// Copyright (c) 2026, s0up and the autobrr contributors.
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 package lang
 
 // CodeName returns the language name for an ISO 639-2 code.

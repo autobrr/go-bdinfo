@@ -119,3 +119,9 @@ Notes:
 
 - `update` (same as `--self-update`)
 - `version`
+
+## License
+
+GPL-2.0-or-later. See [LICENSE](LICENSE).
+
+go-bdinfo is a Go port of [BDInfo](https://github.com/UniqProject/BDInfo), which is licensed under LGPL-2.1. Section 3 of that license permits this port to be distributed under the GPL. See [NOTICE](NOTICE) for upstream attribution.
