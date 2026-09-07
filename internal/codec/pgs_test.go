@@ -35,3 +35,22 @@ func TestScanPGS(t *testing.T) {
 		t.Fatalf("description = %q, want %q", got, want)
 	}
 }
+
+// A PCS truncated before the video size must not mark the stream initialized,
+// so a later, complete PCS can still fill Width and Height.
+func TestScanPGS_TruncatedPCSLeavesStreamUninitialized(t *testing.T) {
+	g := stream.NewGraphicsStream()
+
+	ScanPGS(g, []byte{0x16, 0x00, 0x07, 0x80})
+	if g.IsInitialized {
+		t.Fatal("truncated PCS marked the stream initialized")
+	}
+
+	ScanPGS(g, pgsPCS(0x00))
+	if !g.IsInitialized {
+		t.Fatal("complete PCS did not initialize the stream")
+	}
+	if g.Width != 1920 || g.Height != 1080 {
+		t.Errorf("size = %dx%d, want 1920x1080", g.Width, g.Height)
+	}
+}
