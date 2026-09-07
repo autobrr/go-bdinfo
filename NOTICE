@@ -1,0 +1,16 @@
+go-bdinfo
+Copyright (c) 2026, s0up and the autobrr contributors.
+
+This product is a Go port of BDInfo - Blu-ray Video and Audio Analysis Tool,
+Copyright (c) 2010-2011 Cinema Squid and 2017-2023 UniqProject, and of the
+.NET Core version of BDInfo maintained by dotnetcorecorner, whose sources
+carry the same notices.
+
+BDInfo is licensed under the GNU Lesser General Public License, version 2.1
+or (at your option) any later version. Section 3 of that license permits this
+port to be distributed under the GNU General Public License, version 2 or any
+later version. See LICENSE.
+
+Upstream sources:
+  https://github.com/UniqProject/BDInfo
+  https://github.com/dotnetcorecorner/BDInfo
