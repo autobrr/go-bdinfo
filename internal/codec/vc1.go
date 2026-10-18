@@ -9,6 +9,10 @@ import (
 	"github.com/autobrr/go-bdinfo/internal/stream"
 )
 
+// ScanVC1 reads only the profile from the sequence header. TSCodecVC1.cs also
+// reads the interlace bit, but keeps it local to decode frame-header picture
+// types, which the chapter-stats tag scan in internal/bdrom does. The interlace
+// flag on the stream comes from the format that CLPI and MPLS declare.
 func ScanVC1(v *stream.VideoStream, data []byte) {
 	if v.IsInitialized {
 		return
@@ -16,7 +20,6 @@ func ScanVC1(v *stream.VideoStream, data []byte) {
 
 	var parse uint32
 	var sequenceHeaderParse byte
-	isInterlaced := false
 
 	for i := 0; i < len(data); i++ {
 		parse = (parse << 8) | uint32(data[i])
@@ -35,12 +38,9 @@ func ScanVC1(v *stream.VideoStream, data []byte) {
 				} else {
 					v.EncodingProfile = fmt.Sprintf("Main Profile %d", profileLevel)
 				}
-			case 0:
-				isInterlaced = (parse&0x40)>>6 > 0
 			}
 			v.IsVBR = true
 			v.IsInitialized = true
-			v.IsInterlaced = isInterlaced
 		}
 	}
 }
