@@ -83,3 +83,5 @@ homebrew_casks:
     repository:
       owner: autobrr
       name: "go-bdinfo"
+      pull_request:
+        enabled: true
