@@ -22,13 +22,6 @@ func TestParity_OfficialBDInfo_ReportText(t *testing.T) {
 
 	disc := os.Getenv("BDINFO_PARITY_DISC")
 	if disc == "" {
-		// Convenience default for this workspace; skipped if absent.
-		const candidate = "/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT"
-		if _, err := os.Stat(candidate); err == nil {
-			disc = candidate
-		}
-	}
-	if disc == "" {
 		t.Skip("set BDINFO_PARITY_DISC=/path/to/disc")
 	}
 	if _, err := os.Stat(disc); err != nil {
