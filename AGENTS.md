@@ -14,7 +14,10 @@ Official BDInfo was the parity oracle during the port, not the specification. Wh
 - Report writers → `internal/report/`
 - Library API → `pkg/bdinfo/`; CLI → `cmd/bdinfo/`
 
-C# source, local clones: `~/github/oss/BDInfo-dotnetcorecorner/BDInfo.Core/BDCommon/rom/` (v2.0.5, the Linux CLI the reports come from) and `~/github/oss/BDInfo-src/BDInfo/BDROM/` (UniqProject GUI, has `FormMain.cs`). Official Linux binary and the disc library live on the media host: `root@media:/root/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo` and `/mnt/storage/torrents` (read-only). No Go toolchain there: cross-build with `GOOS=linux GOARCH=amd64 CGO_ENABLED=0` and `scp` the binary.
+C# source, local clones: `~/github/oss/BDInfo-dotnetcorecorner/BDInfo.Core/BDCommon/rom/` (v2.0.5, the Linux CLI the reports come from) and `~/github/oss/BDInfo-src/BDInfo/BDROM/` (UniqProject GUI, has `FormMain.cs`). The official Linux binary is at `root@media:/root/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo`. The disc library is also on the media host, and it is read-only. No Go toolchain there: cross-build with `GOOS=linux GOARCH=amd64 CGO_ENABLED=0` and `scp` the binary.
+
+## Privacy
+Never put release names or media-library paths in anything that lands on GitHub: issues, PRs, commits, this file. Name a disc by its title, for example Network 1976 1080p.
 
 ## Development Workflow
 1. Read the C# implementation before porting or fixing a parser.
@@ -42,14 +45,14 @@ Run a parity check after every parser or report change. Classify every diff line
   - Initialized: stop at first non-null tag.
   - Go impl: `internal/codec/hevc_tag.go` + `internal/bdrom/streamfile.go` (5MB pre-init buffer, shrink after SPS). Test: `internal/codec/hevc_tag_test.go`.
 - Stream diagnostics order: PMT stream order probe (`detectPMTStreamOrder`) with scan/CLPI fallback. Anchors: Network UHD (`00007/00009` hidden DV ordering), Excalibur UHD (`00004` DV + audio/PGS ordering).
-- Playlist same-language ordering: English audio/graphics/text streams of the same type keep PID ascending. Anchor: `The.Man.Who.Wasnt.There...`, 39.435 kbps subtitle before 68.796 kbps.
+- Playlist same-language ordering: English audio/graphics/text streams of the same type keep PID ascending. Anchor: The Man Who Wasn't There, 39.435 kbps subtitle before 68.796 kbps.
 
 ### Quick Manual Parity Check (Report Text)
 Byte-exact diff, run on the media host. Sample 1-2 discs, never the full dataset.
 
 ```bash
 off=/root/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo
-disc=/mnt/storage/torrents/Network.1976.1080p.USA.Blu-ray.AVC.LPCM.1.0-TMT
+disc="<path to the Network 1976 1080p disc>"
 out=/tmp/bdinfo-parity
 mkdir -p "$out"
 
@@ -60,10 +63,10 @@ diff -u --text "$out/official.txt" "$out/ours.txt"
 ```
 
 ### Oracle Test (Fuzzy Normalized)
-`internal/parity/bdinfo_parity_test.go`, gated behind `BDINFO_PARITY=1`, normalizes line endings and trailing whitespace and forces both binaries to `settings.Default(...)` toggles. Defaults to the Network 1976 disc; `BDINFO_PARITY_DISC`, `BDINFO_OFFICIAL_BIN`, and `BDINFO_OFFICIAL_REPORT` (skips running the official binary) override.
+`internal/parity/bdinfo_parity_test.go`, gated behind `BDINFO_PARITY=1`, normalizes line endings and trailing whitespace and forces both binaries to `settings.Default(...)` toggles. `BDINFO_PARITY_DISC` sets the disc and is required. `BDINFO_OFFICIAL_BIN` and `BDINFO_OFFICIAL_REPORT` (skips running the official binary) override.
 
 ```sh
-BDINFO_PARITY=1 BDINFO_OFFICIAL_REPORT=/tmp/bdinfo-parity/official.txt \
+BDINFO_PARITY=1 BDINFO_PARITY_DISC="$disc" BDINFO_OFFICIAL_REPORT=/tmp/bdinfo-parity/official.txt \
 go test ./internal/parity -run TestParity_OfficialBDInfo_ReportText -count=1
 ```
 
