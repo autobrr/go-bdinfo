@@ -4,20 +4,25 @@
 package bdrom
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/autobrr/go-bdinfo/internal/fs"
 	"github.com/autobrr/go-bdinfo/internal/stream"
+	"github.com/autobrr/go-bdinfo/pkg/bdinfo/video"
 )
 
 type StreamClipFile struct {
-	FileInfo fs.FileInfo
-	Name     string
-	FileType string
-	IsValid  bool
-	Streams  map[uint16]stream.Info
+	CaptureTimeline bool
+	STCSequences    []video.STCSequence
+	SequenceErr     error
+	FileInfo        fs.FileInfo
+	Name            string
+	FileType        string
+	IsValid         bool
+	Streams         map[uint16]stream.Info
 	// StreamOrder preserves CLPI stream table order for parity with official BDInfo.
 	StreamOrder []uint16
 }
@@ -53,6 +58,9 @@ func (s *StreamClipFile) Scan() error {
 	if fileType != "HDMV0100" && fileType != "HDMV0200" && fileType != "HDMV0300" {
 		return fmt.Errorf("clip info %s has unknown file type %s", s.Name, fileType)
 	}
+	if s.CaptureTimeline {
+		s.STCSequences, s.SequenceErr = parseSTCSequences(data)
+	}
 
 	clipIndex := int(uint32(data[12])<<24 | uint32(data[13])<<16 | uint32(data[14])<<8 | uint32(data[15]))
 	if clipIndex+4 > len(data) {
@@ -65,6 +73,9 @@ func (s *StreamClipFile) Scan() error {
 	clipData := data[clipIndex+4 : clipIndex+4+clipLength]
 	if len(clipData) < 12 {
 		return fmt.Errorf("clip info %s invalid clip data", s.Name)
+	}
+	if s.CaptureTimeline {
+		s.SequenceErr = errors.Join(s.SequenceErr, validateTimelineProgram(clipData))
 	}
 
 	streamCount := int(clipData[8])

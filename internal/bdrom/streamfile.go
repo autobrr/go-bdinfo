@@ -5,6 +5,7 @@ package bdrom
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +17,7 @@ import (
 	"github.com/autobrr/go-bdinfo/internal/fs"
 	"github.com/autobrr/go-bdinfo/internal/settings"
 	"github.com/autobrr/go-bdinfo/internal/stream"
+	"github.com/autobrr/go-bdinfo/pkg/bdinfo/video"
 )
 
 const (
@@ -352,6 +354,9 @@ type StreamDiagnostics struct {
 }
 
 type StreamFile struct {
+	VideoConsumer   video.Factory
+	Collection      []video.StreamResult
+	PacketSize      int // Actual container framing observed during Scan; zero if unknown.
 	FileInfo        fs.FileInfo
 	Name            string
 	Size            int64
@@ -558,7 +563,8 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 
 // ScanWithProgress reads the stream file in chunks. It checks ctx before each
 // chunk read and returns ctx.Err() as soon as the context is canceled.
-func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*PlaylistFile, full bool, onBytesProcessed func(uint64)) error {
+func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*PlaylistFile, full bool, onBytesProcessed func(uint64)) (scanErr error) {
+	s.PacketSize = 0
 	if s.FileInfo == nil {
 		return nil
 	}
@@ -611,6 +617,18 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 	if fileInfo == nil {
 		return fmt.Errorf("missing stream file info")
 	}
+	var collection *videoCollection
+	if s.VideoConsumer != nil {
+		collection = s.newVideoCollection(ctx, playlists, streamSource(s, scanSettings.EnableSSIF))
+	}
+	collectionClean := false
+	var collectionErr error
+	if collection != nil {
+		defer func() {
+			cause := errors.Join(collectionErr, scanErr)
+			s.Collection = collection.finish(cause, collectionClean)
+		}()
+	}
 	initialPMTOrder, _ := detectPMTStreamOrder(ctx, fileInfo)
 
 	f, err := fileInfo.OpenRead()
@@ -622,8 +640,34 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 	s.Size = fileInfo.Length()
 
 	first := make([]byte, 192)
-	if _, err := io.ReadFull(f, first); err != nil {
-		return err
+	var n int
+	var firstErr error
+	if collection == nil {
+		n, firstErr = io.ReadFull(f, first)
+	} else {
+		// ReadFull drops an error accompanying a full buffer. Collection must retain
+		// that source failure without changing the report's initial-read behavior.
+		n, firstErr = collection.readPrefix(f, first)
+		if firstErr != nil && firstErr != io.EOF {
+			collectionErr = firstErr
+		}
+	}
+	if n != len(first) {
+		// A bare TS packet is complete at 188 bytes. The larger probe only serves
+		// M2TS framing; it must not turn this valid EOF into a truncated packet.
+		if n == 188 && first[0] == 0x47 && (firstErr == io.EOF || firstErr == io.ErrUnexpectedEOF) {
+			first = first[:188]
+		} else {
+			if collection != nil && n >= 188 && first[0] == 0x47 {
+				s.PacketSize = 188
+				collection.invalidatePacketDomain()
+				collection.packet(first[:188], 188, 0)
+			}
+			if firstErr == io.EOF && n > 0 {
+				return io.ErrUnexpectedEOF
+			}
+			return firstErr
+		}
 	}
 
 	packetSize := 192
@@ -636,6 +680,10 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 		syncOffset = 4
 	} else {
 		return fmt.Errorf("invalid TS sync for %s", s.Name)
+	}
+	s.PacketSize = packetSize
+	if collection != nil && packetSize != 192 {
+		collection.invalidatePacketDomain()
 	}
 
 	states := make(map[uint16]*streamState, len(s.Streams)+1)
@@ -708,6 +756,9 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 	clipCursor := newClipTargetCursor(clipTargets)
 
 	processPacket := func(pkt []byte) {
+		if collection != nil {
+			collection.packet(pkt, packetSize, syncOffset)
+		}
 		if len(pkt) <= syncOffset || pkt[syncOffset] != 0x47 {
 			return
 		}
@@ -1007,6 +1058,10 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 	// First read grabs 192 bytes to detect sync/packet size. For 188-byte TS packets this
 	// includes the first 4 bytes of the next packet; carry those forward.
 	carryLen := len(first) - packetSize
+	var sourceBytes int64
+	if collection != nil {
+		sourceBytes = int64(len(first))
+	}
 
 	// Buffer includes room for carry bytes and a remainder (up to packetSize-1).
 	buf := make([]byte, chunkSize+packetSize)
@@ -1018,8 +1073,8 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 			return err
 		}
 		n, err := f.Read(buf[carryLen : carryLen+chunkSize])
-		if n == 0 && err != nil {
-			break
+		if collection != nil {
+			sourceBytes += int64(n)
 		}
 
 		n += carryLen
@@ -1037,6 +1092,15 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 			copy(buf, buf[aligned:n])
 		}
 		if err != nil {
+			if collection != nil {
+				collectionClean = collectionErr == nil && err == io.EOF && carryLen == 0 && sourceBytes == fileInfo.Length()
+				if !collectionClean && collectionErr == nil {
+					collectionErr = err
+					if err == io.EOF {
+						collectionErr = io.ErrUnexpectedEOF
+					}
+				}
+			}
 			break
 		}
 	}

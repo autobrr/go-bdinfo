@@ -30,6 +30,7 @@ Never put release names or media-library paths in anything that lands on GitHub:
 Run a parity check after every parser or report change. Classify every diff line as a Go bug, a BDInfo bug, or a known divergence.
 
 ### Known Divergences (BDInfo bugs fixed in Go)
+- Truncated MPLS files: Go reports playlist parsing failures, including cut stream entries, under `WARNING: File errors`. Official BDInfo writes these errors only to the console. Go keeps the warning in the report, consistent with its existing handling of other playlist errors.
 - PGS descriptions (`1920x1080 / N Captions`): the official Linux CLI leaves the cell empty because only the GUI runs `FormMain.UpdateSubtitleChapterCount`. Go ports `TSCodecPGS.Scan` (`internal/codec/pgs.go`) and the GUI sum (`PlaylistFile.UpdateGraphicsCaptions`) so the CLI report carries the value.
 - PGS PCS cropping fields: BDInfo reads the 8-byte cropping rectangle on every composition object; the PGS format carries it only when `object_cropped_flag` (0x80) is set. Go reads it conditionally (`internal/codec/pgs.go`), so caption counts can differ on multi-object compositions.
 - E-AC-3 dependent frames: `TSCodecAC3.Scan` parses one frame per call, stops as soon as the stream is initialized, and re-clones the core on every dependent frame. It only finds JOC/Atmos because its EMDF scan runs past the frame end into the next frame. Go (`internal/codec/ac3.go`) keeps parsing inside frame bounds, walks every consecutive dependent (strmtyp 1) frame after the independent frame, snapshots the embedded core once, and sums the dependent bitrates and channel maps onto the stream.
@@ -48,7 +49,10 @@ Run a parity check after every parser or report change. Classify every diff line
 - Playlist same-language ordering: English audio/graphics/text streams of the same type keep PID ascending. Anchor: The Man Who Wasn't There, 39.435 kbps subtitle before 68.796 kbps.
 
 ### Quick Manual Parity Check (Report Text)
-Byte-exact diff, run on the media host. Sample 1-2 discs, never the full dataset.
+Compare reports byte for byte on a machine with a local disc and the reference
+binary. Sample 1-2 discs, never the full dataset. The `root@media` host and paths
+below belong to a maintainer's environment; contributors do not need access to it.
+Use local paths and record the reference version, settings, and classified diffs.
 
 ```bash
 off=/root/github/oss/bdinfo-official/bdinfo_linux_v2.0.5_extracted/BDInfo
@@ -72,6 +76,13 @@ go test ./internal/parity -run TestParity_OfficialBDInfo_ReportText -count=1
 
 ### Speed Loop
 Full scans are disk-bound; compare CPU time before wall time. `scripts/speed_parity_loop.sh --disc "<disc-or-iso>" --reps 3` runs official and ours with matched toggles, checks parity per rep, and prints the median wall-time ratio. Smoke with `--reps 1` on one ISO, one static, and one Network-like disc, then `--reps 3` on the regressing sample. If Network-like discs regress, check the clip-target matching path in `internal/bdrom/streamfile.go` first.
+
+Pass `--official "<local-binary>"` or set `BDINFO_OFFICIAL_BIN` to override the
+script's maintainer-specific default. The oracle test also accepts
+`BDINFO_PARITY_DISC` and `BDINFO_OFFICIAL_BIN`. On Windows, use the dotnetcorecorner
+BDInfo Windows x64 2.0.5 CLI for the matching reference version. Use PowerShell for
+native process measurements, or Git Bash for the shell script. Record storage and
+cache conditions; a cached local run does not establish cold-HDD performance.
 
 ## Fuzzing
 `FUZZTIME=30s scripts/fuzz.sh` runs every fuzz target the CI job runs; add new targets to its `TARGETS` list.
