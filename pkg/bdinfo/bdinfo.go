@@ -6,11 +6,14 @@ package bdinfo
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/autobrr/go-bdinfo/internal/bdrom"
 	"github.com/autobrr/go-bdinfo/internal/report"
 	internalsettings "github.com/autobrr/go-bdinfo/internal/settings"
+	"github.com/autobrr/go-bdinfo/pkg/bdinfo/video"
 )
 
 // Stage represents a coarse progress stage for Run.
@@ -72,10 +75,15 @@ func DefaultSettings(reportBaseDir string) Settings {
 
 // Options configure one Run call for a single disc folder or ISO path.
 type Options struct {
-	Path       string
-	ReportPath string
-	Settings   Settings
-	OnProgress func(ProgressEvent)
+	// VideoConsumer optionally collects complete video ES during the existing scan.
+	// A nonnil factory implies IncludeTimeline. Discovery never calls the factory.
+	VideoConsumer video.Factory
+	// IncludeTimeline retains exact MPLS/CLPI facts. The default avoids detail allocations.
+	IncludeTimeline bool
+	Path            string
+	ReportPath      string
+	Settings        Settings
+	OnProgress      func(ProgressEvent)
 }
 
 // DiscInfo contains high-level disc metadata.
@@ -111,9 +119,16 @@ type ScanInfo struct {
 
 // Result contains structured scan output plus rendered report content.
 type Result struct {
-	Disc      DiscInfo
-	Playlists []PlaylistInfo
-	Scan      ScanInfo
+	// Timelines describes playlists contributing to Run's selected report.
+	// Discovery returns timelines for every discovered playlist, or the explicit
+	// PlaylistOnly selection, independently of report filters. This is not HDR extraction.
+	Timelines []PlaylistTimeline
+	// Collection records factory decisions and transport outcomes separately from
+	// report generation. Discovery leaves it nil. Callback failures are nonfatal to Run.
+	Collection []video.StreamResult
+	Disc       DiscInfo
+	Playlists  []PlaylistInfo
+	Scan       ScanInfo
 	// Report is the text the CLI writes for the same settings: the full report,
 	// or one block when SummaryOnly or ForumsOnly is set.
 	Report string
@@ -130,6 +145,7 @@ type Result struct {
 // DiscoverPlaylists opens the disc and returns playlist metadata without scanning stream files.
 // Faster than Run for discovery: scans CLPI and MPLS only, skips the expensive M2TS read.
 // The returned Result has Disc and Playlists populated; Report, QuickSummary and ForumsBlock are always empty.
+// Requested timelines follow Playlists; main/biggest and summary settings do not narrow discovery.
 func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 	if options.Path == "" {
 		return Result{}, errors.New("path is required")
@@ -154,6 +170,7 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 	defer rom.Close()
+	rom.CaptureTimeline = options.IncludeTimeline || options.VideoConsumer != nil
 
 	if err := filterROMToPlaylist(rom, cfg.PlaylistOnly); err != nil {
 		return Result{}, err
@@ -197,6 +214,9 @@ func DiscoverPlaylists(ctx context.Context, options Options) (Result, error) {
 		Playlists: buildPlaylistInfo(playlists, true),
 		Scan:      buildScanInfo(scan),
 	}
+	if rom.CaptureTimeline {
+		result.Timelines = buildTimelines(playlists, rom.StreamFiles, false)
+	}
 
 	emit(options.OnProgress, ProgressEvent{
 		Stage:      StageDone,
@@ -234,6 +254,8 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 	defer rom.Close()
+	rom.CaptureTimeline = options.IncludeTimeline || options.VideoConsumer != nil
+	rom.VideoConsumer = options.VideoConsumer
 
 	if err := filterROMToPlaylist(rom, cfg.PlaylistOnly); err != nil {
 		return Result{}, err
@@ -291,6 +313,14 @@ func Run(ctx context.Context, options Options) (Result, error) {
 		QuickSummary: rendered.QuickSummary,
 		ForumsBlock:  rendered.ForumsBlock,
 		ReportPath:   reportPath,
+	}
+	if rom.CaptureTimeline {
+		result.Timelines = buildTimelines(rendered.Playlists, rom.StreamFiles, true)
+	}
+	if options.VideoConsumer != nil {
+		for _, name := range slices.Sorted(maps.Keys(rom.StreamFiles)) {
+			result.Collection = append(result.Collection, rom.StreamFiles[name].Collection...)
+		}
 	}
 
 	emit(options.OnProgress, ProgressEvent{

@@ -24,9 +24,12 @@ import (
 	"github.com/autobrr/go-bdinfo/internal/settings"
 	"github.com/autobrr/go-bdinfo/internal/stream"
 	"github.com/autobrr/go-bdinfo/internal/util"
+	"github.com/autobrr/go-bdinfo/pkg/bdinfo/video"
 )
 
 type BDROM struct {
+	CaptureTimeline   bool
+	VideoConsumer     video.Factory
 	Path              string
 	Settings          settings.Settings
 	fileSystem        fs.FileSystem
@@ -521,6 +524,7 @@ func (b *BDROM) scanWithProgress(ctx context.Context, progress ScanProgressFunc,
 	emit(ScanProgress{Stage: ScanStageClipInfo, Total: len(clipFiles)})
 	var clipDone atomic.Int64
 	runParallel(ctx, clipFiles, scanWorkerLimit(len(clipFiles), 0), func(clip *StreamClipFile) error {
+		clip.CaptureTimeline = b.CaptureTimeline
 		return clip.Scan()
 	}, func(_ *StreamClipFile) {
 		progressMu.Lock()
@@ -528,6 +532,9 @@ func (b *BDROM) scanWithProgress(ctx context.Context, progress ScanProgressFunc,
 		done := int(clipDone.Add(1))
 		emit(ScanProgress{Stage: ScanStageClipInfo, Completed: done, Total: len(clipFiles)})
 	}, func(clip *StreamClipFile, err error) {
+		if b.CaptureTimeline && clip.SequenceErr == nil {
+			clip.SequenceErr = err
+		}
 		errMu.Lock()
 		result.FileErrors[clip.Name] = err
 		errMu.Unlock()
@@ -548,6 +555,7 @@ func (b *BDROM) scanWithProgress(ctx context.Context, progress ScanProgressFunc,
 	emit(ScanProgress{Stage: ScanStagePlaylist, Total: len(playlists)})
 	var playlistDone atomic.Int64
 	runParallel(ctx, playlists, scanWorkerLimit(len(playlists), 0), func(playlist *PlaylistFile) error {
+		playlist.CaptureTimeline = b.CaptureTimeline
 		return playlist.Scan(b.StreamFiles, b.StreamClipFiles)
 	}, func(_ *PlaylistFile) {
 		progressMu.Lock()
@@ -555,6 +563,9 @@ func (b *BDROM) scanWithProgress(ctx context.Context, progress ScanProgressFunc,
 		done := int(playlistDone.Add(1))
 		emit(ScanProgress{Stage: ScanStagePlaylist, Completed: done, Total: len(playlists)})
 	}, func(playlist *PlaylistFile, err error) {
+		if b.CaptureTimeline && playlist.TimelineErr == nil {
+			playlist.TimelineErr = err
+		}
 		errMu.Lock()
 		result.FileErrors[playlist.Name] = err
 		errMu.Unlock()
@@ -599,6 +610,7 @@ func (b *BDROM) scanWithProgress(ctx context.Context, progress ScanProgressFunc,
 			emit(ScanProgress{Stage: ScanStageStream, Completed: done, Total: len(streamFiles), ProcessedBytes: processed, TotalBytes: streamBytes})
 		}
 		runParallel(ctx, streamFiles, scanWorkerLimit(len(streamFiles), streamBytes), func(streamFile *StreamFile) error {
+			streamFile.VideoConsumer = b.VideoConsumer
 			return streamFile.ScanWithProgress(ctx, streamPlaylists[streamFile], false, func(delta uint64) {
 				if delta == 0 {
 					return
