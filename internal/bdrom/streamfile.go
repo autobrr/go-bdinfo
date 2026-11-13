@@ -137,7 +137,7 @@ func parsePATPMTPIDSection(section []byte) (uint16, bool) {
 	return 0, false
 }
 
-func detectPMTStreamOrder(ctx context.Context, fileInfo fs.FileInfo) ([]uint16, bool) {
+func detectPMTStreamOrder(ctx context.Context, fileInfo fs.FileInfo, mvc *ssifMVCProbe) ([]uint16, bool) {
 	if fileInfo == nil {
 		return nil, false
 	}
@@ -194,6 +194,9 @@ func detectPMTStreamOrder(ctx context.Context, fileInfo fs.FileInfo) ([]uint16, 
 		}
 	}
 	processPacket := func(pkt []byte) {
+		if mvc != nil {
+			mvc.packet(pkt, syncOffset)
+		}
 		if len(pkt) <= syncOffset || pkt[syncOffset] != 0x47 {
 			return
 		}
@@ -369,6 +372,9 @@ type StreamFile struct {
 }
 
 type streamState struct {
+	known               bool
+	isVideo             bool
+	video               *stream.VideoStream
 	windowPackets       uint64
 	windowBytes         uint64
 	dtsPrev             uint64
@@ -395,6 +401,7 @@ type streamState struct {
 	pesHeaderParsed     bool
 	pesPtsDtsFlags      byte
 	pesStarted          bool
+	pesCompleted        bool
 	pesStartCount       uint64
 	collectDiagnostics  bool
 	// pgs and pgsBuf hold the PGS stream and the head of its current PES transfer.
@@ -407,8 +414,9 @@ type streamState struct {
 }
 
 type scanClipTarget struct {
-	clip    *StreamClip
-	streams map[uint16]stream.Info
+	playlist *PlaylistFile
+	clip     *StreamClip
+	streams  map[uint16]stream.Info
 }
 
 // clipTargetCursor narrows clip-target scans to time-overlapping clips while
@@ -438,8 +446,9 @@ func buildClipTargets(playlists []*PlaylistFile, streamName string) []scanClipTa
 				playlistStreams = playlist.AngleStreams[clip.AngleIndex-1]
 			}
 			targets = append(targets, scanClipTarget{
-				clip:    clip,
-				streams: playlistStreams,
+				playlist: playlist,
+				clip:     clip,
+				streams:  playlistStreams,
 			})
 		}
 	}
@@ -561,6 +570,14 @@ func (s *StreamFile) Scan(playlists []*PlaylistFile, full bool) error {
 	return s.ScanWithProgress(context.Background(), playlists, full, nil)
 }
 
+// scanFileInfo keeps progress totals and stream reads on the same source.
+func (s *StreamFile) scanFileInfo(enableSSIF bool) fs.FileInfo {
+	if enableSSIF && s.InterleavedFile != nil && s.InterleavedFile.FileInfo != nil {
+		return s.InterleavedFile.FileInfo
+	}
+	return s.FileInfo
+}
+
 // ScanWithProgress reads the stream file in chunks. It checks ctx before each
 // chunk read and returns ctx.Err() as soon as the context is canceled.
 func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*PlaylistFile, full bool, onBytesProcessed func(uint64)) (scanErr error) {
@@ -610,10 +627,7 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 	// report omits the STREAM DIAGNOSTICS table.
 	collectDiagnostics := true
 
-	fileInfo := s.FileInfo
-	if scanSettings.EnableSSIF && s.InterleavedFile != nil && s.InterleavedFile.FileInfo != nil {
-		fileInfo = s.InterleavedFile.FileInfo
-	}
+	fileInfo := s.scanFileInfo(scanSettings.EnableSSIF)
 	if fileInfo == nil {
 		return fmt.Errorf("missing stream file info")
 	}
@@ -629,7 +643,18 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 			s.Collection = collection.finish(cause, collectionClean)
 		}()
 	}
-	initialPMTOrder, _ := detectPMTStreamOrder(ctx, fileInfo)
+	var mvc *ssifMVCProbe
+	if scanSettings.EnableSSIF && s.InterleavedFile != nil && s.InterleavedFile.FileInfo != nil {
+		mvc = newSSIFMVCProbe(ctx)
+	}
+	initialPMTOrder, _ := detectPMTStreamOrder(ctx, fileInfo, mvc)
+	if mvc != nil && ctx.Err() == nil {
+		for _, pid := range mvc.streams() {
+			if _, exists := s.Streams[pid]; !exists {
+				s.Streams[pid] = &stream.VideoStream{Stream: stream.Stream{PID: pid, StreamType: stream.StreamTypeMVCVideo}}
+			}
+		}
+	}
 
 	f, err := fileInfo.OpenRead()
 	if err != nil {
@@ -688,7 +713,6 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 
 	states := make(map[uint16]*streamState, len(s.Streams)+1)
 	var stateByPID [maxTSPID]*streamState
-	var streamByPID [maxTSPID]stream.Info
 	for pid, st := range s.Streams {
 		dataCap := maxStreamDataOther
 		if st != nil {
@@ -702,8 +726,19 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 			}
 		}
 		state := &streamState{
+			known:              st != nil,
 			pesPacketRemaining: -2,
 			collectDiagnostics: collectDiagnostics,
+		}
+		if st != nil {
+			// Stream classification is fixed for this scan; avoid interface calls
+			// and a second PID lookup for every AVC/MVC transport packet.
+			state.isVideo = st.Base().IsVideoStream()
+			state.video, _ = st.(*stream.VideoStream)
+			if state.video != nil && state.video.StreamType == stream.StreamTypeMVCVideo {
+				// TSCodecMVC reports presence without inspecting or retaining payload.
+				dataCap = 0
+			}
 		}
 		if dataCap > 0 {
 			state.codecData = getCodecBuffer(dataCap)
@@ -723,7 +758,6 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 		}
 		states[pid] = state
 		if int(pid) < maxTSPID {
-			streamByPID[int(pid)] = st
 			stateByPID[int(pid)] = state
 		}
 		if collectDiagnostics {
@@ -765,10 +799,8 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 		pid := (uint16(pkt[syncOffset+1]&0x1f) << 8) | uint16(pkt[syncOffset+2])
 		pidIdx := int(pid)
 		var state *streamState
-		var st stream.Info
 		if pidIdx < maxTSPID {
 			state = stateByPID[pidIdx]
-			st = streamByPID[pidIdx]
 		}
 		if state == nil {
 			if unknownState == nil {
@@ -777,14 +809,14 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 			}
 			state = unknownState
 		}
-		known := st != nil
+		known := state.known
 		if known {
 			if !seenByPID[pidIdx] {
 				seenByPID[pidIdx] = true
 				scanStreamOrder = append(scanStreamOrder, pid)
 			}
 		}
-		isVideo := st != nil && st.Base().IsVideoStream()
+		isVideo := state.isVideo
 
 		payloadStart := (pkt[syncOffset+1] & 0x40) != 0
 		adaptation := (pkt[syncOffset+3] >> 4) & 0x3
@@ -827,7 +859,7 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 			// Match BDInfo: HEVC per-transfer tags are derived from the previous PES transfer
 			// (ScanStream runs when a new payload starts, ending the prior transfer).
 			if state.collectDiagnostics && isVideo {
-				if vs, ok := st.(*stream.VideoStream); ok && vs.StreamType == stream.StreamTypeHEVCVideo {
+				if vs := state.video; vs != nil && vs.StreamType == stream.StreamTypeHEVCVideo {
 					// Avoid stale tags: if we don't have any bytes for the prior transfer, treat it as no tag.
 					if state.hevcTagBuf == nil {
 						state.streamTag = ""
@@ -886,13 +918,11 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 			}
 			s.parsePESHeaderTimestamp(state, isVideo, playlists, clipTargets, clipCursor, states, pid, &firstTS, &lastTS)
 		}
-		if len(payload) == 0 {
+		if state.pesStarted && state.pesPacketRemaining == 0 {
+			state.endTransfer()
 			return
 		}
-		if !state.pesStarted {
-			return
-		}
-		if state.pesPacketRemaining == 0 {
+		if len(payload) == 0 || !state.pesStarted {
 			return
 		}
 		if state.pesPacketRemaining > 0 && len(payload) > state.pesPacketRemaining {
@@ -906,7 +936,7 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 		// HEVC tags are derived from slice headers and depend on SPS/PPS state; collect a bounded
 		// prefix of the current transfer and resolve when the next payload starts.
 		if state.collectDiagnostics && isVideo && len(payload) > 0 {
-			if vs, ok := st.(*stream.VideoStream); ok {
+			if vs := state.video; vs != nil {
 				if vs.StreamType == stream.StreamTypeHEVCVideo {
 					if state.hevcTagBuf == nil {
 						// Match BDInfo: before initialization, TSStreamBuffer captures up to 5MB
@@ -1149,6 +1179,12 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 					tag = &state.streamTag
 				}
 				codec.ScanAVC(concrete, data, tag)
+			case stream.StreamTypeMVCVideo:
+				// Official TSCodecMVC reports presence and VBR, not decoded dimensions.
+				if state.pesCompleted {
+					concrete.IsVBR = true
+					concrete.IsInitialized = true
+				}
 			case stream.StreamTypeHEVCVideo:
 				codec.ScanHEVC(concrete, data, scanSettings)
 			case stream.StreamTypeMPEG2Video:
@@ -1180,9 +1216,11 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 		}
 	}
 
-	s.finalizePlaylistVBR(playlists)
+	for _, playlist := range playlists {
+		playlist.updateVBRBitrates()
+	}
 	if len(pmtStreamOrder) == 0 {
-		if detectedOrder, ok := detectPMTStreamOrder(ctx, fileInfo); ok {
+		if detectedOrder, ok := detectPMTStreamOrder(ctx, fileInfo, nil); ok {
 			pmtStreamOrder = detectedOrder
 		}
 	}
@@ -1227,10 +1265,13 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 	return nil
 }
 
-// endTransfer runs when a PES transfer completes, either at its declared length or
-// when the next payload unit starts. It mirrors BDInfo's per-transfer ScanStream for
-// PGS and records the transfer boundary for DTS-HD.
+// endTransfer handles a declared PES end or a new payload unit start. It mirrors
+// BDInfo's per-transfer ScanStream for PGS and records the boundary for DTS-HD.
+// pesCompleted excludes truncated bounded transfers, even at a new start.
 func (state *streamState) endTransfer() {
+	if state.pesStarted && state.pesHeaderRemaining == 0 && (state.pesPacketRemaining == -1 || state.pesPacketRemaining == 0) {
+		state.pesCompleted = true
+	}
 	if len(state.pgsBuf) > 0 {
 		codec.ScanPGS(state.pgs, state.pgsBuf)
 		state.pgsBuf = state.pgsBuf[:0]
@@ -1328,28 +1369,6 @@ func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, clipTargets
 	}
 }
 
-func (s *StreamFile) finalizePlaylistVBR(playlists []*PlaylistFile) {
-	if playlists == nil {
-		return
-	}
-	for _, playlist := range playlists {
-		packetSeconds := 0.0
-		for _, clip := range playlist.StreamClips {
-			if clip.AngleIndex == 0 {
-				packetSeconds += clip.PacketSeconds
-			}
-		}
-		if packetSeconds <= 0 {
-			continue
-		}
-		for _, playlistStream := range playlist.SortedStreams {
-			if playlistStream.Base().IsVBR {
-				playlistStream.Base().BitRate = int64(math.RoundToEven(float64(playlistStream.Base().PayloadBytes) * 8.0 / packetSeconds))
-			}
-		}
-	}
-}
-
 func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, clipCursor *clipTargetCursor, pid uint16, pts uint64, ptsDiff int64, state *streamState) {
 	if state == nil {
 		return
@@ -1365,6 +1384,7 @@ func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, clipCurso
 			if streamTime != 0 && (streamTime < clip.TimeIn || streamTime > clip.TimeOut) {
 				continue
 			}
+			target.playlist.scanMu.Lock()
 			clip.PayloadBytes += state.windowBytes
 			clip.PacketCount += state.windowPackets
 
@@ -1390,6 +1410,7 @@ func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, clipCurso
 					}
 				}
 			}
+			target.playlist.scanMu.Unlock()
 		}
 	} else {
 		for _, target := range clipTargets {
@@ -1397,6 +1418,7 @@ func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, clipCurso
 			if streamTime != 0 && (streamTime < clip.TimeIn || streamTime > clip.TimeOut) {
 				continue
 			}
+			target.playlist.scanMu.Lock()
 			clip.PayloadBytes += state.windowBytes
 			clip.PacketCount += state.windowPackets
 
@@ -1422,6 +1444,7 @@ func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, clipCurso
 					}
 				}
 			}
+			target.playlist.scanMu.Unlock()
 		}
 	}
 
