@@ -35,6 +35,8 @@ TARGETS=(
   "./internal/codec|FuzzHEVCFrameTagFromTransfer"
   "./internal/bdrom|FuzzStreamClipFileScan"
   "./internal/bdrom|FuzzParsePTSAndValidateTimestamp"
+  "./internal/bdrom|FuzzVideoCollection"
+  "./internal/bdrom|FuzzExactTimeline"
 )
 
 # crasher_written reports whether a failed run produced a real reproducer:
