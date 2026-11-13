@@ -401,6 +401,7 @@ type streamState struct {
 	pesHeaderParsed     bool
 	pesPtsDtsFlags      byte
 	pesStarted          bool
+	pesCompleted        bool
 	pesStartCount       uint64
 	collectDiagnostics  bool
 	// pgs and pgsBuf hold the PGS stream and the head of its current PES transfer.
@@ -413,8 +414,9 @@ type streamState struct {
 }
 
 type scanClipTarget struct {
-	clip    *StreamClip
-	streams map[uint16]stream.Info
+	playlist *PlaylistFile
+	clip     *StreamClip
+	streams  map[uint16]stream.Info
 }
 
 // clipTargetCursor narrows clip-target scans to time-overlapping clips while
@@ -444,8 +446,9 @@ func buildClipTargets(playlists []*PlaylistFile, streamName string) []scanClipTa
 				playlistStreams = playlist.AngleStreams[clip.AngleIndex-1]
 			}
 			targets = append(targets, scanClipTarget{
-				clip:    clip,
-				streams: playlistStreams,
+				playlist: playlist,
+				clip:     clip,
+				streams:  playlistStreams,
 			})
 		}
 	}
@@ -915,13 +918,11 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 			}
 			s.parsePESHeaderTimestamp(state, isVideo, playlists, clipTargets, clipCursor, states, pid, &firstTS, &lastTS)
 		}
-		if len(payload) == 0 {
+		if state.pesStarted && state.pesPacketRemaining == 0 {
+			state.endTransfer()
 			return
 		}
-		if !state.pesStarted {
-			return
-		}
-		if state.pesPacketRemaining == 0 {
+		if len(payload) == 0 || !state.pesStarted {
 			return
 		}
 		if state.pesPacketRemaining > 0 && len(payload) > state.pesPacketRemaining {
@@ -1180,7 +1181,7 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 				codec.ScanAVC(concrete, data, tag)
 			case stream.StreamTypeMVCVideo:
 				// Official TSCodecMVC reports presence and VBR, not decoded dimensions.
-				if state.pesStartCount >= 2 || (state.pesStarted && state.pesPacketRemaining == 0) {
+				if state.pesCompleted {
 					concrete.IsVBR = true
 					concrete.IsInitialized = true
 				}
@@ -1215,7 +1216,9 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 		}
 	}
 
-	s.finalizePlaylistVBR(playlists)
+	for _, playlist := range playlists {
+		playlist.updateVBRBitrates()
+	}
 	if len(pmtStreamOrder) == 0 {
 		if detectedOrder, ok := detectPMTStreamOrder(ctx, fileInfo, nil); ok {
 			pmtStreamOrder = detectedOrder
@@ -1262,10 +1265,13 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 	return nil
 }
 
-// endTransfer runs when a PES transfer completes, either at its declared length or
-// when the next payload unit starts. It mirrors BDInfo's per-transfer ScanStream for
-// PGS and records the transfer boundary for DTS-HD.
+// endTransfer handles a declared PES end or a new payload unit start. It mirrors
+// BDInfo's per-transfer ScanStream for PGS and records the boundary for DTS-HD.
+// pesCompleted excludes truncated bounded transfers, even at a new start.
 func (state *streamState) endTransfer() {
+	if state.pesStarted && state.pesHeaderRemaining == 0 && (state.pesPacketRemaining == -1 || state.pesPacketRemaining == 0) {
+		state.pesCompleted = true
+	}
 	if len(state.pgsBuf) > 0 {
 		codec.ScanPGS(state.pgs, state.pgsBuf)
 		state.pgsBuf = state.pgsBuf[:0]
@@ -1363,28 +1369,6 @@ func (s *StreamFile) updateStreamBitrates(playlists []*PlaylistFile, clipTargets
 	}
 }
 
-func (s *StreamFile) finalizePlaylistVBR(playlists []*PlaylistFile) {
-	if playlists == nil {
-		return
-	}
-	for _, playlist := range playlists {
-		packetSeconds := 0.0
-		for _, clip := range playlist.StreamClips {
-			if clip.AngleIndex == 0 {
-				packetSeconds += clip.PacketSeconds
-			}
-		}
-		if packetSeconds <= 0 {
-			continue
-		}
-		for _, playlistStream := range playlist.SortedStreams {
-			if playlistStream.Base().IsVBR {
-				playlistStream.Base().BitRate = int64(math.RoundToEven(float64(playlistStream.Base().PayloadBytes) * 8.0 / packetSeconds))
-			}
-		}
-	}
-}
-
 func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, clipCursor *clipTargetCursor, pid uint16, pts uint64, ptsDiff int64, state *streamState) {
 	if state == nil {
 		return
@@ -1400,6 +1384,7 @@ func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, clipCurso
 			if streamTime != 0 && (streamTime < clip.TimeIn || streamTime > clip.TimeOut) {
 				continue
 			}
+			target.playlist.scanMu.Lock()
 			clip.PayloadBytes += state.windowBytes
 			clip.PacketCount += state.windowPackets
 
@@ -1425,6 +1410,7 @@ func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, clipCurso
 					}
 				}
 			}
+			target.playlist.scanMu.Unlock()
 		}
 	} else {
 		for _, target := range clipTargets {
@@ -1432,6 +1418,7 @@ func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, clipCurso
 			if streamTime != 0 && (streamTime < clip.TimeIn || streamTime > clip.TimeOut) {
 				continue
 			}
+			target.playlist.scanMu.Lock()
 			clip.PayloadBytes += state.windowBytes
 			clip.PacketCount += state.windowPackets
 
@@ -1457,6 +1444,7 @@ func (s *StreamFile) updateStreamBitrate(clipTargets []scanClipTarget, clipCurso
 					}
 				}
 			}
+			target.playlist.scanMu.Unlock()
 		}
 	}
 
