@@ -101,11 +101,27 @@ if ! command -v timeout >/dev/null 2>&1; then
 fi
 
 mkdir -p "$OUTDIR"
+build_ours=false
 if [[ -z "$OURS_BIN" ]]; then
   OURS_BIN="$OUTDIR/bdinfo"
+  build_ours=true
+fi
+# A baseline that is the same file as ours times one binary twice. The build
+# would also overwrite a baseline left at the build path by an earlier run.
+if [[ -e "$OURS_BIN" && "$REF_BIN" -ef "$OURS_BIN" ]]; then
+  echo "$REF_NAME and ours are the same file: $OURS_BIN" >&2
+  exit 2
+fi
+if [[ "$build_ours" == true ]]; then
   echo "building ours -> $OURS_BIN"
   go build -o "$OURS_BIN" ./cmd/bdinfo
 fi
+
+# Prints the ratio a/b with 4 decimals, or N/A when b is 0, for a run that
+# rounds to 0 ms.
+ratio() {
+  awk -v a="$1" -v b="$2" 'BEGIN { if (b == 0) print "N/A"; else printf "%.4f\n", a / b }'
+}
 
 # Prints "<wall ms> <cpu ms>" for one run. CPU is the user plus system time of
 # the run and its child processes.
@@ -207,8 +223,7 @@ for rep in $(seq 1 "$REPS"); do
     exit 1
   fi
 
-  awk -v n="$REF_NAME" -v rc="$rc" -v oc="$oc" -v rw="$rw" -v ow="$ow" \
-    'BEGIN { printf "  cpu %s=%dms ours=%dms ratio=%.4f | wall %s=%dms ours=%dms ratio=%.4f\n", n, rc, oc, oc/rc, n, rw, ow, ow/rw }'
+  echo "  cpu $REF_NAME=${rc}ms ours=${oc}ms ratio=$(ratio "$oc" "$rc") | wall $REF_NAME=${rw}ms ours=${ow}ms ratio=$(ratio "$ow" "$rw")"
 done
 
 ref_cpu_med="$(median_ms "${ref_cpu[@]}")"
@@ -218,6 +233,6 @@ ours_wall_med="$(median_ms "${ours_wall[@]}")"
 
 echo
 echo "summary (median of $REPS reps)"
-awk -v n="$REF_NAME" -v r="$ref_cpu_med" -v o="$ours_cpu_med" 'BEGIN { printf "  cpu  %s=%dms ours=%dms ratio(ours/%s)=%.4f\n", n, r, o, n, o/r }'
-awk -v n="$REF_NAME" -v r="$ref_wall_med" -v o="$ours_wall_med" 'BEGIN { printf "  wall %s=%dms ours=%dms ratio(ours/%s)=%.4f\n", n, r, o, n, o/r }'
+echo "  cpu  $REF_NAME=${ref_cpu_med}ms ours=${ours_cpu_med}ms ratio(ours/$REF_NAME)=$(ratio "$ours_cpu_med" "$ref_cpu_med")"
+echo "  wall $REF_NAME=${ref_wall_med}ms ours=${ours_wall_med}ms ratio(ours/$REF_NAME)=$(ratio "$ours_wall_med" "$ref_wall_med")"
 echo "  output-dir=$OUTDIR"
