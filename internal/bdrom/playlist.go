@@ -601,10 +601,12 @@ func (p *PlaylistFile) loadStreamClips() {
 
 	if reference.StreamFile != nil {
 		if p.Settings.EnableSSIF && reference.StreamFile.InterleavedFile != nil {
-			if ssifStream, ok := reference.StreamFile.Streams[4114]; ok {
-				if _, exists := p.Streams[4114]; !exists {
-					clone := ssifStream.Clone()
-					p.Streams[4114] = clone
+			for pid, ssifStream := range reference.StreamFile.Streams {
+				if pid != 4114 && ssifStream.Base().StreamType != stream.StreamTypeMVCVideo {
+					continue
+				}
+				if _, exists := p.Streams[pid]; !exists {
+					p.Streams[pid] = ssifStream.Clone()
 				}
 			}
 		}

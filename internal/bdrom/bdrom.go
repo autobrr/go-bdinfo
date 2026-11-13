@@ -232,16 +232,16 @@ func orderedStreamFiles(files map[string]*StreamFile) []*StreamFile {
 	return out
 }
 
-func streamFilesTotalSize(streamFiles []*StreamFile) uint64 {
+func streamFilesTotalSize(streamFiles []*StreamFile, streamPlaylists map[*StreamFile][]*PlaylistFile) uint64 {
 	var total uint64
 	for _, streamFile := range streamFiles {
-		if streamFile == nil {
+		if streamFile == nil || streamFile.FileInfo == nil {
 			continue
 		}
-		if streamFile.Size > 0 {
-			total += uint64(streamFile.Size)
-		} else if streamFile.FileInfo != nil {
-			total += uint64(streamFile.FileInfo.Length())
+		playlists := streamPlaylists[streamFile]
+		enableSSIF := len(playlists) > 0 && playlists[0].Settings.EnableSSIF
+		if size := streamFile.scanFileInfo(enableSSIF).Length(); size > 0 {
+			total += uint64(size)
 		}
 	}
 	return total
@@ -586,7 +586,7 @@ func (b *BDROM) scanWithProgress(ctx context.Context, progress ScanProgressFunc,
 			filteredStreamFiles = append(filteredStreamFiles, streamFile)
 		}
 		streamFiles = filteredStreamFiles
-		streamBytes := streamFilesTotalSize(streamFiles)
+		streamBytes := streamFilesTotalSize(streamFiles, streamPlaylists)
 		emit(ScanProgress{Stage: ScanStageStream, Total: len(streamFiles), TotalBytes: streamBytes})
 		var streamDone atomic.Int64
 		var streamProcessed atomic.Uint64
