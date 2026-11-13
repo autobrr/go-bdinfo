@@ -71,7 +71,7 @@ go test ./internal/parity -run TestParity_OfficialBDInfo_ReportText -count=1
 ```
 
 ### Speed Loop
-Full scans are disk-bound; compare CPU time before wall time. `scripts/speed_parity_loop.sh --disc "<disc-or-iso>" --reps 3` runs official and ours with matched toggles, checks parity per rep, and prints the median wall-time ratio. Smoke with `--reps 1` on one ISO, one static, and one Network-like disc, then `--reps 3` on the regressing sample. If Network-like discs regress, check the clip-target matching path in `internal/bdrom/streamfile.go` first.
+Full scans are disk-bound; compare CPU time before wall time. `scripts/speed_parity_loop.sh --disc "<disc-or-iso>" --reps 3` runs official and ours with matched toggles, checks parity per rep, and prints the median CPU and wall-time ratios. To compare a branch with main, pass `--baseline <main binary>`. On the media host, pass cross-built binaries with `--ours` and `--baseline`. Smoke with `--reps 1` on one ISO, one static, and one Network-like disc, then `--reps 3` on the regressing sample. If Network-like discs regress, check the clip-target matching path in `internal/bdrom/streamfile.go` first.
 
 ## Fuzzing
 `FUZZTIME=30s scripts/fuzz.sh` runs every fuzz target the CI job runs; add new targets to its `TARGETS` list.
