@@ -372,6 +372,9 @@ type StreamFile struct {
 }
 
 type streamState struct {
+	known               bool
+	isVideo             bool
+	video               *stream.VideoStream
 	windowPackets       uint64
 	windowBytes         uint64
 	dtsPrev             uint64
@@ -707,7 +710,6 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 
 	states := make(map[uint16]*streamState, len(s.Streams)+1)
 	var stateByPID [maxTSPID]*streamState
-	var streamByPID [maxTSPID]stream.Info
 	for pid, st := range s.Streams {
 		dataCap := maxStreamDataOther
 		if st != nil {
@@ -721,8 +723,19 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 			}
 		}
 		state := &streamState{
+			known:              st != nil,
 			pesPacketRemaining: -2,
 			collectDiagnostics: collectDiagnostics,
+		}
+		if st != nil {
+			// Stream classification is fixed for this scan; avoid interface calls
+			// and a second PID lookup for every AVC/MVC transport packet.
+			state.isVideo = st.Base().IsVideoStream()
+			state.video, _ = st.(*stream.VideoStream)
+			if state.video != nil && state.video.StreamType == stream.StreamTypeMVCVideo {
+				// TSCodecMVC reports presence without inspecting or retaining payload.
+				dataCap = 0
+			}
 		}
 		if dataCap > 0 {
 			state.codecData = getCodecBuffer(dataCap)
@@ -742,7 +755,6 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 		}
 		states[pid] = state
 		if int(pid) < maxTSPID {
-			streamByPID[int(pid)] = st
 			stateByPID[int(pid)] = state
 		}
 		if collectDiagnostics {
@@ -784,10 +796,8 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 		pid := (uint16(pkt[syncOffset+1]&0x1f) << 8) | uint16(pkt[syncOffset+2])
 		pidIdx := int(pid)
 		var state *streamState
-		var st stream.Info
 		if pidIdx < maxTSPID {
 			state = stateByPID[pidIdx]
-			st = streamByPID[pidIdx]
 		}
 		if state == nil {
 			if unknownState == nil {
@@ -796,14 +806,14 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 			}
 			state = unknownState
 		}
-		known := st != nil
+		known := state.known
 		if known {
 			if !seenByPID[pidIdx] {
 				seenByPID[pidIdx] = true
 				scanStreamOrder = append(scanStreamOrder, pid)
 			}
 		}
-		isVideo := st != nil && st.Base().IsVideoStream()
+		isVideo := state.isVideo
 
 		payloadStart := (pkt[syncOffset+1] & 0x40) != 0
 		adaptation := (pkt[syncOffset+3] >> 4) & 0x3
@@ -846,7 +856,7 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 			// Match BDInfo: HEVC per-transfer tags are derived from the previous PES transfer
 			// (ScanStream runs when a new payload starts, ending the prior transfer).
 			if state.collectDiagnostics && isVideo {
-				if vs, ok := st.(*stream.VideoStream); ok && vs.StreamType == stream.StreamTypeHEVCVideo {
+				if vs := state.video; vs != nil && vs.StreamType == stream.StreamTypeHEVCVideo {
 					// Avoid stale tags: if we don't have any bytes for the prior transfer, treat it as no tag.
 					if state.hevcTagBuf == nil {
 						state.streamTag = ""
@@ -925,7 +935,7 @@ func (s *StreamFile) ScanWithProgress(ctx context.Context, playlists []*Playlist
 		// HEVC tags are derived from slice headers and depend on SPS/PPS state; collect a bounded
 		// prefix of the current transfer and resolve when the next payload starts.
 		if state.collectDiagnostics && isVideo && len(payload) > 0 {
-			if vs, ok := st.(*stream.VideoStream); ok {
+			if vs := state.video; vs != nil {
 				if vs.StreamType == stream.StreamTypeHEVCVideo {
 					if state.hevcTagBuf == nil {
 						// Match BDInfo: before initialization, TSStreamBuffer captures up to 5MB
