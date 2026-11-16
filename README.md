@@ -94,6 +94,14 @@ Notes:
 - `Result.QuickSummary` and `Result.ForumsBlock` hold the `--summaryonly` and `--forumsonly` text from the same scan. They are always filled and do not depend on `SummaryOnly` or `ForumsOnly`.
 - File writing is caller-owned.
 
+With SSIF enabled, reports can include an MVC stream signalled by a valid,
+current, unambiguous PMT in that clip's SSIF initial bounded probe, even when
+the base CLPI omits it.
+This establishes report stream presence, not MVC decoding or a 3D classification
+from SSIF existence alone. These PMT-only discoveries do not extend metadata-only
+timelines or the optional collector's pre-scan stream selection; SSIF packet
+associations remain unsupported.
+
 ### Optional video collection and exact timelines
 
 Set `Options.IncludeTimeline` to populate `Result.Timelines`. These retain the

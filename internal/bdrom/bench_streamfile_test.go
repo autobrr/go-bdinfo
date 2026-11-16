@@ -30,14 +30,23 @@ func benchmarkStreamData() []byte {
 
 func BenchmarkStreamScanDisabled(b *testing.B) {
 	data := benchmarkStreamData()
-	b.SetBytes(int64(len(data)))
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		s := NewStreamFile(&memFileInfo{name: "BENCH.M2TS", data: data})
-		s.Streams[0x1011] = &stream.VideoStream{Stream: stream.Stream{PID: 0x1011, StreamType: stream.StreamTypeHEVCVideo}}
-		if err := s.Scan(nil, false); err != nil {
-			b.Fatal(err)
-		}
+	for _, tc := range []struct {
+		name string
+		kind stream.StreamType
+	}{
+		{"HEVC", stream.StreamTypeHEVCVideo},
+		{"MVC", stream.StreamTypeMVCVideo},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.SetBytes(int64(len(data)))
+			b.ReportAllocs()
+			for b.Loop() {
+				s := NewStreamFile(&memFileInfo{name: "BENCH.M2TS", data: data})
+				s.Streams[0x1011] = &stream.VideoStream{Stream: stream.Stream{PID: 0x1011, StreamType: tc.kind}}
+				if err := s.Scan(nil, false); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

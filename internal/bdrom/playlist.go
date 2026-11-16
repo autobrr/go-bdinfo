@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/autobrr/go-bdinfo/internal/fs"
 	"github.com/autobrr/go-bdinfo/internal/settings"
@@ -46,6 +47,9 @@ type PlaylistFile struct {
 	AudioStreams    []*stream.AudioStream
 	TextStreams     []*stream.TextStream
 	GraphicsStreams []*stream.GraphicsStream
+
+	// scanMu protects bitrate accounting shared by concurrent stream-file scans.
+	scanMu sync.Mutex
 }
 
 func NewPlaylistFile(fileInfo fs.FileInfo, settings settings.Settings) *PlaylistFile {
@@ -601,10 +605,40 @@ func (p *PlaylistFile) loadStreamClips() {
 
 	if reference.StreamFile != nil {
 		if p.Settings.EnableSSIF && reference.StreamFile.InterleavedFile != nil {
-			if ssifStream, ok := reference.StreamFile.Streams[4114]; ok {
-				if _, exists := p.Streams[4114]; !exists {
-					clone := ssifStream.Clone()
-					p.Streams[4114] = clone
+			for pid, ssifStream := range reference.StreamFile.Streams {
+				if pid != 4114 && ssifStream.Base().StreamType != stream.StreamTypeMVCVideo {
+					continue
+				}
+				if _, exists := p.Streams[pid]; !exists {
+					p.Streams[pid] = ssifStream.Clone()
+				}
+				playlistStream := p.Streams[pid].Base()
+				if _, inCLPI := reference.StreamClipFile.Streams[pid]; inCLPI || playlistStream.StreamType != stream.StreamTypeMVCVideo {
+					continue
+				}
+				// PMT-only MVC was absent from playlist accounting during the scan.
+				// Reuse its diagnostic windows with the same clip-time selection.
+				playlistStream.PayloadBytes, playlistStream.PacketCount = 0, 0
+				playlistStream.PacketSeconds, playlistStream.ActiveBitRate = 0, 0
+				for _, clip := range p.StreamClips {
+					if clip.AngleIndex != 0 || clip.StreamFile == nil {
+						continue
+					}
+					clipStream := clip.StreamFile.Streams[pid]
+					if clipStream == nil || clipStream.Base().StreamType != stream.StreamTypeMVCVideo {
+						continue
+					}
+					for _, diagnostic := range clip.StreamFile.StreamDiagnostics[pid] {
+						if diagnostic.Marker != 0 && (diagnostic.Marker < clip.TimeIn || diagnostic.Marker > clip.TimeOut) {
+							continue
+						}
+						playlistStream.PayloadBytes += diagnostic.Bytes
+						playlistStream.PacketCount += diagnostic.Packets
+						playlistStream.PacketSeconds += diagnostic.Interval
+					}
+				}
+				if playlistStream.PacketSeconds > 0 {
+					playlistStream.ActiveBitRate = int64(math.RoundToEven(float64(playlistStream.PayloadBytes) * 8.0 / playlistStream.PacketSeconds))
 				}
 			}
 		}
@@ -730,6 +764,9 @@ func (p *PlaylistFile) loadStreamClips() {
 }
 
 func (p *PlaylistFile) updateVBRBitrates() {
+	p.scanMu.Lock()
+	defer p.scanMu.Unlock()
+
 	packetSeconds := 0.0
 	for _, clip := range p.StreamClips {
 		if clip.AngleIndex == 0 {

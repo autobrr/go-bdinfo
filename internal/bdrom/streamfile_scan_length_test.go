@@ -104,3 +104,83 @@ func TestStreamFileScanLengthSingleTimestampIsZero(t *testing.T) {
 		t.Fatalf("expected codec uninitialized for single unterminated transfer: IsVBR=%v IsInitialized=%v EncodingProfile=%q", vs.IsVBR, vs.IsInitialized, vs.EncodingProfile)
 	}
 }
+
+func TestStreamFileScanMVCAccounting(t *testing.T) {
+	const pid = 0x1012
+	for _, tc := range []struct {
+		name          string
+		packetSize    int
+		payloadSize   int
+		pesLength     uint16
+		continuations int
+		splitHeader   bool
+		wantPackets   uint64
+		wantBytes     uint64
+	}{
+		{"TS", 188, 184, 0, 1, false, 6, 1047},
+		{"M2TS", 192, 184, 0, 1, false, 6, 1047},
+		{"adaptation", 192, 182, 0, 1, false, 6, 1035},
+		{"bounded PES", 192, 184, 20, 1, false, 6, 21},
+		{"bounded PES continuation", 192, 184, 400, 2, false, 9, 1161},
+		{"split PES header", 192, 184, 0, 1, true, 9, 1074},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var data []byte
+			appendPacket := func(start bool, payload []byte, size int) {
+				p := tsPacket188(pid, start, nil)
+				if size < 184 {
+					p[3], p[4] = 0x30, byte(183-size)
+					for i := 6; i < 188-size; i++ {
+						p[i] = 0xff // adaptation stuffing after the zero flags byte
+					}
+				}
+				copy(p[188-size:], payload)
+				if tc.packetSize == 192 {
+					data = append(data, 0, 0, 0, 0)
+				}
+				data = append(data, p[:]...)
+			}
+			for _, timestamp := range []uint64{90000, 180000, 270000} {
+				pes := []byte{0, 0, 1, 0xfd, 0, 0, 0x80, 0xc0, 10}
+				pes[4], pes[5] = byte(tc.pesLength>>8), byte(tc.pesLength)
+				pts := encodePTS(0x30, timestamp)
+				dts := encodePTS(0x10, timestamp)
+				pes = append(pes, pts[:]...)
+				pes = append(pes, dts[:]...)
+				if tc.splitHeader {
+					appendPacket(true, pes[:9], 9)
+					appendPacket(false, pes[9:], 184)
+				} else {
+					appendPacket(true, pes, tc.payloadSize)
+				}
+				for range tc.continuations {
+					appendPacket(false, nil, tc.payloadSize)
+				}
+			}
+			s := NewStreamFile(&memFileInfo{name: "MVC.M2TS", data: data})
+			video := &stream.VideoStream{Stream: stream.Stream{PID: pid, StreamType: stream.StreamTypeMVCVideo}}
+			s.Streams[pid] = video
+			if err := s.Scan([]*PlaylistFile{}, false); err != nil {
+				t.Fatal(err)
+			}
+			if !video.IsInitialized || !video.IsVBR || s.Length != 1 {
+				t.Fatalf("MVC transfer state: initialized=%v VBR=%v duration=%v", video.IsInitialized, video.IsVBR, s.Length)
+			}
+			// BDInfo's file duration starts at the second DTS, but packet time includes both intervals.
+			if video.PacketCount != tc.wantPackets || video.PayloadBytes != tc.wantBytes || video.PacketSeconds != 2 {
+				t.Fatalf("MVC accounting: packets=%d bytes=%d seconds=%v", video.PacketCount, video.PayloadBytes, video.PacketSeconds)
+			}
+			var packets, payload uint64
+			for _, diagnostic := range s.StreamDiagnostics[pid] {
+				packets += diagnostic.Packets
+				payload += diagnostic.Bytes
+				if diagnostic.Tag != "" {
+					t.Fatalf("MVC has no decoded frame tag: %q", diagnostic.Tag)
+				}
+			}
+			if packets != video.PacketCount || payload != video.PayloadBytes {
+				t.Fatalf("MVC diagnostics: packets=%d bytes=%d", packets, payload)
+			}
+		})
+	}
+}
